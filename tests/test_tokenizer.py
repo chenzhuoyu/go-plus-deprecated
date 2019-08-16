@@ -182,7 +182,6 @@ string_errs = r"""
 "\uD800"             // illegal: surrogate half
 "\U00110000"         // illegal: invalid Unicode code point
 """
-
 string_err_vals = (
     'surrogate half',
     'invalid Unicode code point',

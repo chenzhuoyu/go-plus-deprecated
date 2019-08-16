@@ -29,33 +29,18 @@ class State:
         ret.pos = self.pos
         return ret
 
-class Scope:
-    tk: 'Tokenizer'
-    st: Optional[State]
-
-    def __init__(self, tk: 'Tokenizer'):
-        self.tk = tk
-        self.st = None
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.st is not None:
-            self.tk.load_state(self.st)
-            self.st = None
-
-    def __enter__(self):
-        self.st = self.tk.save_state()
-        return self.tk
-
 class Token:
     col   : int
     row   : int
+    file  : str
     kind  : 'TokenType'
     value : 'TokenValue'
 
-    def __init__(self, st: State, kind: 'TokenType', value: 'TokenValue'):
+    def __init__(self, st: State, fname: str, kind: 'TokenType', value: 'TokenValue'):
         self.col = st.col
         self.row = st.row
         self.kind = kind
+        self.file = fname
         self.value = value
 
     def __repr__(self):
@@ -65,43 +50,43 @@ class Token:
             return '#{%d,%d,%s=%r}' % (self.row + 1, self.col + 1, self.kind.name, self.value)
 
     @classmethod
-    def eol(cls, st: State):
-        return cls(st, TokenType.LF, None)
+    def eol(cls, tk: 'Tokenizer'):
+        return cls(tk.save, tk.file, TokenType.LF, None)
 
     @classmethod
-    def end(cls, st: State):
-        return cls(st, TokenType.End, None)
+    def end(cls, tk: 'Tokenizer'):
+        return cls(tk.save, tk.file, TokenType.End, None)
 
     @classmethod
-    def int(cls, st: State, value: int):
-        return cls(st, TokenType.Int, value)
+    def int(cls, tk: 'Tokenizer', value: int):
+        return cls(tk.save, tk.file, TokenType.Int, value)
 
     @classmethod
-    def rune(cls, st: State, value: bytes):
-        return cls(st, TokenType.Rune, value)
+    def rune(cls, tk: 'Tokenizer', value: bytes):
+        return cls(tk.save, tk.file, TokenType.Rune, value)
 
     @classmethod
-    def ident(cls, st: State, value: str):
+    def ident(cls, tk: 'Tokenizer', value: str):
         if value not in KEYWORDS:
-            return cls(st, TokenType.Name, value)
+            return cls(tk.save, tk.file, TokenType.Name, value)
         else:
-            return cls(st, TokenType.Keyword, value)
+            return cls(tk.save, tk.file, TokenType.Keyword, value)
 
     @classmethod
-    def float(cls, st: State, value: float):
-        return cls(st, TokenType.Float, value)
+    def float(cls, tk: 'Tokenizer', value: float):
+        return cls(tk.save, tk.file, TokenType.Float, value)
 
     @classmethod
-    def string(cls, st: State, value: bytes):
-        return cls(st, TokenType.String, value)
+    def string(cls, tk: 'Tokenizer', value: bytes):
+        return cls(tk.save, tk.file, TokenType.String, value)
 
     @classmethod
-    def complex(cls, st: State, value: complex):
-        return cls(st, TokenType.Complex, value)
+    def complex(cls, tk: 'Tokenizer', value: complex):
+        return cls(tk.save, tk.file, TokenType.Complex, value)
 
     @classmethod
-    def operator(cls, st: State, value: str):
-        return cls(st, TokenType.Operator, value)
+    def operator(cls, tk: 'Tokenizer', value: str):
+        return cls(tk.save, tk.file, TokenType.Operator, value)
 
 class TokenType(IntEnum):
     LF       = 0
@@ -230,12 +215,7 @@ class Tokenizer:
         self.state = State()
 
     def _error(self, msg: str) -> SyntaxError:
-        return SyntaxError('%s:%d:%d: %s' % (
-            self.file,
-            self.save.row + 1,
-            self.save.col + 1,
-            msg,
-        ))
+        return SyntaxError('%s:%d:%d: %s' % (self.file, self.save.row + 1, self.save.col + 1, msg))
 
     def _curr_char(self) -> str:
         return self.src[self.state.pos]
@@ -265,30 +245,31 @@ class Tokenizer:
         st.pos += 1
         return ch
 
-    def _skip_ch(self) -> str:
+    def _skip_eol(self):
+        while self._curr_char() not in ('', '\n'):
+            self._next_char()
+            self._peek_char()
+
+    def _skip_char(self) -> str:
         self.save.col = self.state.col
         self.save.row = self.state.row
         self.save.pos = self.state.pos
         return self._next_char()
 
-    def _skip_eol(self, ch: str):
-        while ch and ch != '\n':
-            ch = self._next_char()
-
     def _skip_space(self, ch: str, nonl: bool) -> str:
         while ch.isspace() and (nonl or ch != '\n'):
-            ch = self._skip_ch()
+            ch = self._skip_char()
         else:
             return ch
 
     def _skip_blanks(self, nonl: bool) -> str:
         while True:
-            ch = self._skip_ch()
+            ch = self._skip_char()
             ch = self._skip_space(ch, nonl)
 
             # unix style comments
             if ch == '#':
-                self._skip_eol(ch)
+                self._skip_eol()
                 continue
 
             # check for possible comments
@@ -296,9 +277,8 @@ class Tokenizer:
                 return ch
 
             # line comments
-            nch = self._next_char()
-            if nch == '/':
-                self._skip_eol(nch)
+            if self._next_char() == '/':
+                self._skip_eol()
                 continue
 
             # skip the '*' char
@@ -375,9 +355,9 @@ class Tokenizer:
 
     def _parse(self, ch: str) -> Token:
         if not ch:
-            return Token.end(self.save)
+            return Token.end(self)
         elif ch == '\n':
-            return Token.eol(self.save)
+            return Token.eol(self)
         elif ch == '`':
             return self._parse_raw()
         elif ch == "'":
@@ -408,7 +388,7 @@ class Tokenizer:
         if not nch:
             raise self._error('unexpected EOF')
         else:
-            return Token.string(self.save, ret)
+            return Token.string(self, ret)
 
     def _parse_rune(self) -> Token:
         val = self._next_char()
@@ -420,7 +400,7 @@ class Tokenizer:
         elif self._next_char() != "'":
             raise self._error('too many characters')
         else:
-            return Token.rune(self.save, ret)
+            return Token.rune(self, ret)
 
     def _parse_string(self) -> Token:
         ret = b''
@@ -432,7 +412,7 @@ class Tokenizer:
             nch = self._next_char()
 
         # build the token
-        return Token.string(self.save, ret)
+        return Token.string(self, ret)
 
     def _parse_number(self, first: str) -> Token:
         ret = first
@@ -441,7 +421,7 @@ class Tokenizer:
         # special case of leading zero
         if first == '0':
             if not nch:
-                return Token.int(self.save, 0)
+                return Token.int(self, 0)
             elif nch in 'bB':
                 self._next_char()
                 return self._parse_number_charset('binary', 2, '01')
@@ -465,9 +445,9 @@ class Tokenizer:
         elif nch in ('e', 'E'):
             return self._parse_number_science(ret)
         elif ret[0] != '0':
-            return Token.int(self.save, int(ret, 10))
+            return Token.int(self, int(ret, 10))
         elif all((x in octdigits for x in ret)):
-            return Token.int(self.save, int(ret, 8))
+            return Token.int(self, int(ret, 8))
         else:
             raise self._error('invalid octal digit')
 
@@ -486,11 +466,11 @@ class Tokenizer:
         elif nch in ('e', 'E'):
             return self._parse_number_science(first + rem)
         else:
-            return Token.float(self.save, float(first + rem))
+            return Token.float(self, float(first + rem))
 
     def _parse_number_complex(self, first: str) -> Token:
         self._next_char()
-        return Token.complex(self.save, float(first) * 1j)
+        return Token.complex(self, float(first) * 1j)
 
     def _parse_number_science(self, first: str) -> Token:
         ok = False
@@ -513,7 +493,7 @@ class Tokenizer:
         elif nch == 'i':
             return self._parse_number_complex(first + ret)
         else:
-            return Token.float(self.save, float(first + ret))
+            return Token.float(self, float(first + ret))
 
     def _parse_number_charset(self, name: str, base: int, charset: str) -> Token:
         ret = ''
@@ -528,7 +508,7 @@ class Tokenizer:
         if not ret or (nch and nch in hexdigits):
             raise self._error('invalid %s digit' % name)
         else:
-            return Token.int(self.save, int(ret, base))
+            return Token.int(self, int(ret, base))
 
     def _parse_decimal(self) -> Token:
         if self.is_eof or self._curr_char() not in digits:
@@ -563,7 +543,7 @@ class Tokenizer:
 
         # build the token
         self.load_state(pst)
-        return Token.operator(self.save, ret)
+        return Token.operator(self, ret)
 
     def _parse_identifier(self, first: str) -> Token:
         ret = first
@@ -575,13 +555,13 @@ class Tokenizer:
             nch = self._peek_char()
 
         # build the token
-        return Token.ident(self.save, ret)
+        return Token.ident(self, ret)
 
     @property
     def is_eof(self):
         return self.state.pos >= len(self.src)
 
-    def next(self, ignore_nl: bool = True) -> Token:
+    def next(self, ignore_nl: bool = False) -> Token:
         return self._parse(self._skip_blanks(ignore_nl))
 
     def save_state(self) -> State:
