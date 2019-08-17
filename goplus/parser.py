@@ -7,10 +7,9 @@ from typing import TypeVar
 from typing import Callable
 from typing import Optional
 
-from .ast import VarSpec
+from .ast import InitSpec
 from .ast import TypeSpec
 from .ast import Function
-from .ast import ConstSpec
 from .ast import ImportSpec
 
 from .ast import Name
@@ -98,7 +97,7 @@ class Parser:
 
     def _read(self) -> Token:
         token = self.lx.next()
-        state = self.lx.save_state()
+        state = self.lx.save.copy()
 
         # not a new line
         if token.kind != TokenType.LF:
@@ -187,36 +186,17 @@ class Parser:
     def _add_field(self, ret: List[StructField], vt: Type, tk: Token, name: Optional[Token] = None):
         sf = StructField(tk)
         sf.type = vt
+        ret.append(sf)
 
         # set the field name, if any
         if name is not None:
             sf.name = Name(name)
             sf.name.name = name.value
 
-        # resolve all names
-        fname = self._resolve_field_name(sf)
-        names = (self._resolve_field_name(fp) for fp in ret)
-
-        # check for duplications
-        if fname == '_' or all((fname != item for item in names)):
-            ret.append(sf)
-        else:
-            raise self._error(tk, 'duplicated field %s' % repr(fname))
-
     def _make_named_ptr(self, tk: Token, vt: NamedType) -> PointerType:
         ret = PointerType(tk)
         ret.base = vt
         return ret
-
-    def _resolve_field_name(self, sf: StructField) -> str:
-        if sf.name is not None:
-            return sf.name.name
-        elif isinstance(sf.type, NamedType):
-            return sf.type.name.name
-        else:
-            assert isinstance(sf.type, PointerType)
-            assert isinstance(sf.type.base, NamedType)
-            return sf.type.base.name.name
 
     ### Atomic Parsers ###
 
@@ -389,18 +369,45 @@ class Parser:
 
     ### Top Level Parsers --- Variables, Types, Constants & Imports ###
 
-    def _parse_var_spec(self, tk: Token, ret: List[VarSpec]):
-        pass    # TODO: var spec
+    def _parse_var_spec(self, tk: Token, ret: List[InitSpec], readonly: bool):
+        vn = Name(tk)
+        vn.name = self._require(tk, TokenType.Name).value
+
+        # create the variable spec
+        val = InitSpec(tk)
+        val.names.append(vn)
+
+        # const a, b, c, ...
+        while self._should(self._peek(), TokenType.Operator, ','):
+            self._next()
+            val.names.append(self._parse_name())
+
+        # optional const type
+        if self._is_type():
+            val.type = self._parse_type()
+
+        # the "=" operator, required under read-only mode
+        if readonly or self._should(self._peek(), TokenType.Operator, '='):
+            self._require(self._next(), TokenType.Operator, '=')
+            val.values.append(self._parse_expression())
+
+            # ... = 1, 2, 3, ...
+            while self._should(self._peek(), TokenType.Operator, ','):
+                self._next()
+                val.values.append(self._parse_expression())
+
+        # but at least one of them should be present
+        if not val.type and not val.values:
+            raise self._error(self._peek(), '\'=\' or type specifier expected')
+
+        # add to variable / const list
+        val.readonly = readonly
+        ret.append(val)
 
     def _parse_type_spec(self, tk: Token, ret: List[TypeSpec]):
         ts = TypeSpec(tk)
         ts.name = Name(self._require(tk, TokenType.Name))
         ts.name.name = tk.value
-
-        # check for duplication
-        if ts.name.name != '_':
-            if any((ts.name.name == item.name for item in ret)):
-                raise self._error(tk, 'duplicated type %s' % repr(ts.name.name))
 
         # check for type aliasing
         if self._should(self._peek(), TokenType.Operator, '='):
@@ -410,52 +417,6 @@ class Parser:
         # parse the actual type
         ts.type = self._parse_type()
         ret.append(ts)
-
-    def _parse_const_spec(self, tk: Token, ret: List[ConstSpec]):
-        vals = []
-        ctype = None
-        names = [self._require(tk, TokenType.Name)]
-
-        # const a, b, c, ...
-        while self._should(self._peek(), TokenType.Operator, ','):
-            self._next()
-            names.append(self._require(self._next(), TokenType.Name))
-
-        # optional const type
-        if self._is_type():
-            ctype = self._parse_type()
-
-        # the "=" operator
-        self._require(self._next(), TokenType.Operator, '=')
-        vals.append(self._parse_expression())
-
-        # ... = 1, 2, 3, ...
-        while self._should(self._peek(), TokenType.Operator, ','):
-            self._next()
-            vals.append(self._parse_expression())
-
-        # count must match
-        if len(vals) != len(names):
-            raise self._error(self._peek(), 'cannot assign %d value%s to %d identifier%s' % (
-                len(vals)  , '' if len(vals) == 1 else 's',
-                len(names) , '' if len(names) == 1 else 's',
-            ))
-
-        # add to const table
-        for name, value in zip(names, vals):
-            if name.value != '_':
-                if any((name.value == item.value for item in ret)):
-                    raise self._error(name, 'duplicated const %s' % repr(name.value))
-
-            # create a new const spec
-            val = ConstSpec(name)
-            val.name = Name(name)
-            val.name.name = name.value
-
-            # set spec type and value
-            val.type = ctype
-            val.value = value
-            ret.append(val)
 
     def _parse_import_spec(self, tk: Token, ret: List[ImportSpec]):
         imp = ImportSpec(tk)
@@ -498,15 +459,21 @@ class Parser:
 
     ### Generic Parsers ###
 
+    def _parse_val(self, tk: Token, ret: List[InitSpec]):
+        self._parse_var_spec(tk, ret, readonly = True)
+
+    def _parse_var(self, tk: Token, ret: List[InitSpec]):
+        self._parse_var_spec(tk, ret, readonly = False)
+
     def _parse_decl(self, tk: Token, ret: Package):
         if tk.value == 'func':
             self._parse_function(ret.funcs)
         elif tk.value == 'var':
-            self._parse_declarations(ret.vars, self._parse_var_spec)
+            self._parse_declarations(ret.vars, self._parse_var)
         elif tk.value == 'type':
             self._parse_declarations(ret.types, self._parse_type_spec)
         elif tk.value == 'const':
-            self._parse_declarations(ret.consts, self._parse_const_spec)
+            self._parse_declarations(ret.consts, self._parse_val)
         else:
             raise self._error(tk, 'unexpected keyword %s' % repr(tk.value))
 
@@ -534,5 +501,9 @@ class Parser:
             self._semicolon()
 
         # must be EOF
-        self._require(self._next(), TokenType.End)
-        return ret
+        if self._should(self._peek(), TokenType.End):
+            return ret
+
+        # otherwise it's an unexpected token
+        tk = self._next()
+        raise self._error(tk, 'unexpected token %s' % repr(tk))

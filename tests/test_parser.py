@@ -130,6 +130,22 @@ type MyBlock Block
 #     _, _                                  //                        (iota == 2, unused)
 #     bit3, mask3                           // bit3 == 8, mask3 == 7  (iota == 3)
 # )
+
+var i int
+var U, V, W float64
+var k = 0
+var x, y float32 = -1, -2
+var (
+    i2      int
+    u, v, s = 2.0, 3.0, "bar"
+)
+var re, im = complexSqrt(-1)
+var _, found = entries[name]  // map lookup; only interested in "found"
+
+var d = math.Sin(0.5)  // d is float64
+var i3 = 42            // i is int
+var t, ok = x.(T)      // t is T, ok is bool
+var n = nil            // illegal
 """
 
 class TestParser(unittest.TestCase):

@@ -302,14 +302,14 @@ class Tokenizer:
         else:
             return self._read_escape(self._next_char())
 
-    def _read_digit(self, name: str, n: int, charset: str) -> str:
-        ret = ''
-        for _ in range(n):
-            nch = self._next_char()
-            ret += nch
-            if not nch or nch not in charset:
-                raise self._error('too few %s digits' % name)
-        return ret
+    def _read_digit(self, name: str, charset: str) -> str:
+        if self.is_eof or self._curr_char() not in charset:
+            raise self._error('too few %s digits' % name)
+        else:
+            return self._next_char()
+
+    def _read_digits(self, name: str, charset: str, n: int) -> str:
+        return ''.join((self._read_digit(name, charset) for _ in range(n)))
 
     def _read_escape(self, ch: str) -> bytes:
         if not ch:
@@ -328,10 +328,10 @@ class Tokenizer:
             raise self._error('invalid escape character %s' % repr(ch))
 
     def _read_escape_hex(self) -> bytes:
-        return bytes([int(self._read_digit('hexadecimal', 2, hexdigits), 16)])
+        return bytes([int(self._read_digits('hexadecimal', hexdigits, 2), 16)])
 
     def _read_escape_oct(self, ch: str) -> bytes:
-        rem = self._read_digit('octal', 2, octdigits)
+        rem = self._read_digits('octal', octdigits, 2)
         val = int(ch + rem, 8)
 
         # check for octal range
@@ -342,7 +342,7 @@ class Tokenizer:
 
     def _read_escape_uni(self, size: int) -> bytes:
         try:
-            return chr(int(self._read_digit('hexadecimal', size, hexdigits), 16)).encode('utf-8')
+            return chr(int(self._read_digits('hexadecimal', hexdigits, size), 16)).encode('utf-8')
         except ValueError as e:
             exc = e
 

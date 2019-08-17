@@ -158,8 +158,18 @@ class Expression(Node):
 
 ### Top Level Declarations ###
 
-class VarSpec(Node):
-    pass
+class InitSpec(Node):
+    type     : Optional[Type]
+    names    : List[Name]
+    values   : List[Expression]
+    readonly : bool
+
+    def __init__(self, tk: Token):
+        self.type = None
+        self.names = []
+        self.values = []
+        self.readonly = False
+        super().__init__(tk)
 
 class TypeSpec(Node):
     name     : Name
@@ -173,15 +183,6 @@ class TypeSpec(Node):
 class Function(Node):
     pass
 
-class ConstSpec(Node):
-    name  : Name
-    type  : Optional[Type]
-    value : Expression
-
-    def __init__(self, tk: Token):
-        self.type = None
-        super().__init__(tk)
-
 class ImportSpec(Node):
     path  : String
     alias : Optional[Name]
@@ -192,10 +193,10 @@ class ImportSpec(Node):
 
 class Package(Node):
     name    : Name
-    vars    : List[VarSpec]
+    vars    : List[InitSpec]
     funcs   : List[Function]
     types   : List[TypeSpec]
-    consts  : List[ConstSpec]
+    consts  : List[InitSpec]
     imports : List[ImportSpec]
 
     def __init__(self, tk: Token):
