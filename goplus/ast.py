@@ -104,7 +104,20 @@ class NamedType(Node):
         super().__init__(tk)
 
 class StructType(Node):
-    pass
+    fields: List['StructField']
+
+    def __init__(self, tk: Token):
+        self.fields = []
+        super().__init__(tk)
+
+class StructField(Node):
+    type: 'Type'
+    tags: String
+    name: Optional[Name]
+
+    def __init__(self, tk: Token):
+        self.name = None
+        super().__init__(tk)
 
 class ChannelDirection(IntFlag):
     Send = 0x01
@@ -149,7 +162,13 @@ class VarSpec(Node):
     pass
 
 class TypeSpec(Node):
-    pass
+    name     : Name
+    type     : 'Type'
+    is_alias : bool
+
+    def __init__(self, tk: Token):
+        self.is_alias = False
+        super().__init__(tk)
 
 class Function(Node):
     pass
@@ -173,16 +192,16 @@ class ImportSpec(Node):
 
 class Package(Node):
     name    : Name
-    vars    : Dict[str, VarSpec]
-    funcs   : Dict[str, Function]
-    types   : Dict[str, TypeSpec]
-    consts  : Dict[str, ConstSpec]
+    vars    : List[VarSpec]
+    funcs   : List[Function]
+    types   : List[TypeSpec]
+    consts  : List[ConstSpec]
     imports : List[ImportSpec]
 
     def __init__(self, tk: Token):
-        self.vars = {}
-        self.funcs = {}
-        self.types = {}
-        self.consts = {}
+        self.vars = []
+        self.funcs = []
+        self.types = []
+        self.consts = []
         self.imports = []
         super().__init__(tk)

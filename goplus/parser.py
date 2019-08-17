@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 
-from typing import Dict
 from typing import List
 from typing import Tuple
 from typing import Union
@@ -30,6 +29,7 @@ from .ast import PointerType
 from .ast import FunctionType
 from .ast import InterfaceType
 
+from .ast import StructField
 from .ast import ChannelDirection
 
 from .tokenizer import State
@@ -63,6 +63,20 @@ END_OPERATORS = {
     '--',
 }
 
+TYPE_KEYWORDS = {
+    'map',
+    'chan',
+    'func',
+    'struct',
+    'interface',
+}
+
+TYPE_OPERATORS = {
+    '*',
+    '[',
+    '<-',
+}
+
 def _is_end_token(tk: Token):
     return (tk.kind in END_TOKENS) or \
            (tk.kind == TokenType.Keyword and tk.value in END_KEYWORDS) or \
@@ -74,30 +88,13 @@ class Parser:
     last : Optional[Token]
     prev : Optional[Token]
 
-    class _Scope:
-        ps: 'Parser'
-        st: Optional[Tuple[State, Token, Token, int]]
-
-        def __init__(self, ps: 'Parser'):
-            self.ps = ps
-            self.st = None
-
-        def __exit__(self, exc_type, exc_val, exc_tb):
-            if self.st is not None:
-                self.ps.load_state(self.st)
-                self.st = None
-
-        def __enter__(self):
-            self.st = self.ps.save_state()
-            return self
-
     def __init__(self, lx: Tokenizer):
         self.lx = lx
         self.iota = 0
         self.last = None
         self.prev = None
 
-    ### Helper Functions ###
+    ### Tokenizer Interfaces ###
 
     def _read(self) -> Token:
         token = self.lx.next()
@@ -158,11 +155,7 @@ class Parser:
         if tv == ';':
             self._next()
 
-    ### Scope Management ###
-
-    @property
-    def scope(self):
-        return self._Scope(self)
+    ### State Management ###
 
     def save_state(self) -> Tuple[State, Token, Token, int]:
         return self.lx.save_state(), self.last, self.prev, self.iota
@@ -171,17 +164,65 @@ class Parser:
         st, self.last, self.prev, self.iota = state
         self.lx.load_state(st)
 
+    ### Helper Functions ###
+
+    def _is_type(self) -> bool:
+        tk = self._peek()
+        tt, tv = tk.kind, tk.value
+
+        # check for possible types
+        if tt == TokenType.Name:
+            return True
+        elif tt == TokenType.Keyword:
+            return tv in TYPE_KEYWORDS
+        elif tt == TokenType.Operator:
+            return tv in TYPE_OPERATORS
+        else:
+            return False
+
+    def _add_names(self, ret: List[StructField], vt: Type, names: List[Token]):
+        for name in names:
+            self._add_field(ret, vt, name, name = name)
+
+    def _add_field(self, ret: List[StructField], vt: Type, tk: Token, name: Optional[Token] = None):
+        sf = StructField(tk)
+        sf.type = vt
+
+        # set the field name, if any
+        if name is not None:
+            sf.name = Name(name)
+            sf.name.name = name.value
+
+        # resolve all names
+        fname = self._resolve_field_name(sf)
+        names = (self._resolve_field_name(fp) for fp in ret)
+
+        # check for duplications
+        if fname == '_' or all((fname != item for item in names)):
+            ret.append(sf)
+        else:
+            raise self._error(tk, 'duplicated field %s' % repr(fname))
+
+    def _make_named_ptr(self, tk: Token, vt: NamedType) -> PointerType:
+        ret = PointerType(tk)
+        ret.base = vt
+        return ret
+
+    def _resolve_field_name(self, sf: StructField) -> str:
+        if sf.name is not None:
+            return sf.name.name
+        elif isinstance(sf.type, NamedType):
+            return sf.type.name.name
+        else:
+            assert isinstance(sf.type, PointerType)
+            assert isinstance(sf.type.base, NamedType)
+            return sf.type.base.name.name
+
     ### Atomic Parsers ###
 
     def _parse_name(self) -> Name:
         tk = self._next()
-        ret = Name(tk)
-
-        # check for token type
-        if tk.kind != TokenType.Name:
-            raise self._error(tk, 'identifiers expected')
-
-        # set the name
+        ret = Name(self._require(tk, TokenType.Name))
         ret.name = tk.value
         return ret
 
@@ -249,8 +290,63 @@ class Parser:
         ret.package, ret.name = ret.name, self._parse_name()
         return ret
 
+    def _parse_field_decl(self, ret: List[StructField]):
+        p = len(ret)
+        tk = self._peek()
+        state = self.save_state()
+
+        # embedded pointer type
+        if self._should(tk, TokenType.Operator, '*'):
+            self._next()
+            self._require(self._peek(), TokenType.Name)
+            self._add_field(ret, self._make_named_ptr(tk, self._parse_named_type()), tk)
+
+        # try parsing as identifier list
+        elif self._should(tk, TokenType.Name):
+            tk = self._next()
+            names = [self._require(tk, TokenType.Name)]
+
+            # parse each identifier
+            while self._should(self._peek(), TokenType.Operator, ','):
+                self._next()
+                names.append(self._require(self._next(), TokenType.Name))
+
+            # normal fields
+            if self._is_type():
+                self._add_names(ret, self._parse_type(), names)
+
+            # not followed by a type, probably an embedded field
+            # restore the state, and re-parse as a named type
+            else:
+                self.load_state(state)
+                self._require(self._peek(), TokenType.Name)
+                self._add_field(ret, self._parse_named_type(), tk)
+
+        # otherwise it's an error
+        else:
+            raise self._error(tk, 'identifier or type specifier expected')
+
+        # check for optional tags
+        if self._should(self._peek(), TokenType.String):
+            tk = self._next()
+            tags = String(tk)
+
+            # update to all fields
+            for field in ret[p:]:
+                field.tags = tags
+
     def _parse_struct_type(self) -> StructType:
-        pass    # TODO: struct type
+        ret = StructType(self._next())
+        self._require(self._next(), TokenType.Operator, '{')
+
+        # parse every field
+        while not self._should(self._peek(), TokenType.Operator, '}'):
+            self._parse_field_decl(ret.fields)
+            self._semicolon()
+
+        # skip the '}' operator
+        self._next()
+        return ret
 
     def _parse_channel_type(self, chan: bool) -> ChannelType:
         tk = self._next()
@@ -288,18 +384,34 @@ class Parser:
 
     ### Top Level Parsers --- Functions & Methods ###
 
-    def _parse_function(self, ret: Dict[str, Function]):
+    def _parse_function(self, ret: List[Function]):
         pass    # TODO: function
 
     ### Top Level Parsers --- Variables, Types, Constants & Imports ###
 
-    def _parse_var_spec(self, tk: Token, ret: Dict[str, VarSpec]):
+    def _parse_var_spec(self, tk: Token, ret: List[VarSpec]):
         pass    # TODO: var spec
 
-    def _parse_type_spec(self, tk: Token, ret: Dict[str, TypeSpec]):
-        pass    # TODO: type spec
+    def _parse_type_spec(self, tk: Token, ret: List[TypeSpec]):
+        ts = TypeSpec(tk)
+        ts.name = Name(self._require(tk, TokenType.Name))
+        ts.name.name = tk.value
 
-    def _parse_const_spec(self, tk: Token, ret: Dict[str, ConstSpec]):
+        # check for duplication
+        if ts.name.name != '_':
+            if any((ts.name.name == item.name for item in ret)):
+                raise self._error(tk, 'duplicated type %s' % repr(ts.name.name))
+
+        # check for type aliasing
+        if self._should(self._peek(), TokenType.Operator, '='):
+            self._next()
+            ts.is_alias = True
+
+        # parse the actual type
+        ts.type = self._parse_type()
+        ret.append(ts)
+
+    def _parse_const_spec(self, tk: Token, ret: List[ConstSpec]):
         vals = []
         ctype = None
         names = [self._require(tk, TokenType.Name)]
@@ -310,7 +422,7 @@ class Parser:
             names.append(self._require(self._next(), TokenType.Name))
 
         # optional const type
-        if not self._should(self._peek(), TokenType.Operator, '='):
+        if self._is_type():
             ctype = self._parse_type()
 
         # the "=" operator
@@ -331,17 +443,19 @@ class Parser:
 
         # add to const table
         for name, value in zip(names, vals):
-            if name.value in ret:
-                raise self._error(name, 'duplicated const %s' % repr(name.value))
+            if name.value != '_':
+                if any((name.value == item.value for item in ret)):
+                    raise self._error(name, 'duplicated const %s' % repr(name.value))
 
             # create a new const spec
-            spec = ret[name.value] = ConstSpec(name)
-            spec.type = ctype
-            spec.value = value
+            val = ConstSpec(name)
+            val.name = Name(name)
+            val.name.name = name.value
 
-            # set the spec name
-            spec.name = Name(name)
-            spec.name.name = name.value
+            # set spec type and value
+            val.type = ctype
+            val.value = value
+            ret.append(val)
 
     def _parse_import_spec(self, tk: Token, ret: List[ImportSpec]):
         imp = ImportSpec(tk)
