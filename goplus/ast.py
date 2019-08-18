@@ -82,6 +82,14 @@ class String(Node):
         self.value = tk.value
         assert tk.kind == TokenType.String
 
+class Operator(Node):
+    op: str
+
+    def __init__(self, tk: Token):
+        self.op = tk.value
+        super().__init__(tk)
+        assert tk.kind == TokenType.Operator
+
 ### Language Structures ###
 
 class MapType(Node):
@@ -153,8 +161,18 @@ Type = Union[
     InterfaceType,
 ]
 
-class Expression(Node):
+class Primary(Node):
     pass
+
+class Expression(Node):
+    op    : Optional[Operator]
+    left  : Union[Primary, 'Expression']
+    right : Optional['Expression']
+
+    def __init__(self, tk: Token):
+        self.op = None
+        self.right = None
+        super().__init__(tk)
 
 ### Top Level Declarations ###
 

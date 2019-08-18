@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from typing import Set
 from typing import List
 from typing import Tuple
 from typing import Union
@@ -14,7 +15,10 @@ from .ast import ImportSpec
 
 from .ast import Name
 from .ast import String
+from .ast import Operator
+
 from .ast import Package
+from .ast import Primary
 from .ast import Expression
 
 from .ast import Type
@@ -76,6 +80,24 @@ TYPE_OPERATORS = {
     '<-',
 }
 
+UNARY_OPERATORS = {
+    '+',
+    '-',
+    '!',
+    '^',
+    '*',
+    '&',
+    '<-',
+}
+
+BINARY_OPERATORS = [
+    {'||'},
+    {'&&'},
+    {'==', '!=', '<', '<=', '>', '>='},
+    {'+' , '-' , '|', '^'},
+    {'*' , '/' , '%', '<<', '>>', '&', '&^'},
+]
+
 def _is_end_token(tk: Token):
     return (tk.kind in END_TOKENS) or \
            (tk.kind == TokenType.Keyword and tk.value in END_KEYWORDS) or \
@@ -86,6 +108,23 @@ class Parser:
     iota : int
     last : Optional[Token]
     prev : Optional[Token]
+
+    class _Scope:
+        ps: 'Parser'
+        st: Optional[Tuple[State, Token, Token, int]]
+
+        def __init__(self, ps: 'Parser'):
+            self.ps = ps
+            self.st = None
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if self.st is not None:
+                self.ps.load_state(self.st)
+                self.st = None
+
+        def __enter__(self):
+            self.st = self.ps.save_state()
+            return self
 
     def __init__(self, lx: Tokenizer):
         self.lx = lx
@@ -165,6 +204,10 @@ class Parser:
 
     ### Helper Functions ###
 
+    def _is_ops(self, ops: Set[str]) -> bool:
+        tk = self._peek()
+        return tk.value in ops and tk.kind == TokenType.Operator
+
     def _is_type(self) -> bool:
         tk = self._peek()
         tt, tv = tk.kind, tk.value
@@ -172,12 +215,23 @@ class Parser:
         # check for possible types
         if tt == TokenType.Name:
             return True
-        elif tt == TokenType.Keyword:
+
+        # maybe: map, chan, func, struct, interface
+        if tt == TokenType.Keyword:
             return tv in TYPE_KEYWORDS
-        elif tt == TokenType.Operator:
-            return tv in TYPE_OPERATORS
-        else:
+
+        # then it must be an operator
+        if tt != TokenType.Operator:
             return False
+
+        # special case for '(' operator
+        if tv != '(':
+            return tv in TYPE_OPERATORS
+
+        # try match rule :: Type = '(' Type ')' .
+        with self._Scope(self):
+            self._next()
+            return self._is_type()
 
     def _add_names(self, ret: List[StructField], vt: Type, names: List[Token]):
         for name in names:
@@ -209,7 +263,9 @@ class Parser:
     ### Language Structures --- Types ###
 
     def _parse_type(self) -> Type:
-        if self._should(self._peek(), TokenType.Keyword, 'map'):
+        if self._should(self._peek(), TokenType.Operator, '('):
+            return self._parse_nested()
+        elif self._should(self._peek(), TokenType.Keyword, 'map'):
             return self._parse_map_type()
         elif self._should(self._peek(), TokenType.Operator, '['):
             return self._parse_list_type()
@@ -229,6 +285,14 @@ class Parser:
             return self._parse_interface_type()
         else:
             raise self._error(self._peek(), 'type specifier expected')
+
+    def _parse_nested(self) -> Type:
+        self._next()
+        return self._parse_nested_end(self._parse_type())
+
+    def _parse_nested_end(self, ret: Type) -> Type:
+        self._require(self._next(), TokenType.Operator, ')')
+        return ret
 
     def _parse_map_type(self) -> MapType:
         ret = MapType(self._next())
@@ -359,8 +423,47 @@ class Parser:
 
     ### Language Structures --- Expressions ###
 
+    def _parse_expr(self, prec: int) -> Expression:
+        if prec >= len(BINARY_OPERATORS):
+            return self._parse_unary()
+        else:
+            return self._parse_binary(prec)
+
+    def _parse_term(self, prec: int, op: Token, val: Expression) -> Expression:
+        new = Expression(self._peek())
+        new.op = Operator(op)
+        new.left = val
+        new.right = self._parse_expr(prec + 1)
+        return new
+
+    def _parse_unary(self) -> Union[Primary, Expression]:
+        if not self._is_ops(UNARY_OPERATORS):
+            return self._parse_primary()
+        else:
+            tk = self._next()
+            ret = Expression(tk)
+            ret.op = Operator(tk)
+            ret.left = self._parse_unary()
+            return ret
+
+    def _parse_binary(self, prec: int) -> Expression:
+        ret = Expression(self._peek())
+        ret.left = self._parse_expr(prec + 1)
+
+        # check for operators of this precedence
+        while self._is_ops(BINARY_OPERATORS[prec]):
+            tk = self._next()
+            ret = self._parse_term(prec, tk, ret)
+
+        # all done
+        return ret
+
+    def _parse_primary(self) -> Primary:
+        pass
+
     def _parse_expression(self) -> Expression:
-        pass    # TODO: expression
+        # TODO: prune expression tree
+        return self._parse_expr(prec = 0)
 
     ### Top Level Parsers --- Functions & Methods ###
 
@@ -386,7 +489,7 @@ class Parser:
         if self._is_type():
             val.type = self._parse_type()
 
-        # the "=" operator, required under read-only mode
+        # the '=' operator, required under read-only mode
         if readonly or self._should(self._peek(), TokenType.Operator, '='):
             self._require(self._next(), TokenType.Operator, '=')
             val.values.append(self._parse_expression())
@@ -422,7 +525,7 @@ class Parser:
         imp = ImportSpec(tk)
         tt, tv = tk.kind, tk.value
 
-        # import . "xxx" / import xxx "xxx"
+        # import . 'xxx' / import xxx 'xxx'
         if tt == TokenType.Name or (tv == '.' and tt == TokenType.Operator):
             imp.alias, tk = Name(tk), self._next()
             imp.alias.name = tv
