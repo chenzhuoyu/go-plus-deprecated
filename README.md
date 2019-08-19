@@ -3,7 +3,7 @@
 **THIS IS A WORKING IN PROGRESS DRAFT SPECIFICATION**
 
 Go Plus is designed to be a strict
-super-set of Go programming language, which means:
+super-set of the Go programming language, which means:
 
 * All valid Go code is valid Go Plus code
 
@@ -18,7 +18,7 @@ func Choose(c bool, v1, v2 int) int {
 }
 ```
 
-## Explicit access specifiers
+## Explicit access specifiers (not implemented for now)
 
 ```goplus
 type SomeStruct struct {
@@ -49,7 +49,7 @@ public var exportedValue int = 100
 private const INTERNAL_CONST int = 10000
 ```
 
-## Interface implementation validation
+## Interface implementation validation (not implemented for now)
 
 There is no way to enfore explicit interface implementation, cause
 that breaks existing code.
