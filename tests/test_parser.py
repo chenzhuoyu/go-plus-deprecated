@@ -12,13 +12,7 @@ import . "lib/math"         // Sin
 import (
     `context`
     `fmt`
-
-    `example.com/gopkg/gorm`
-    `github.com/sirupsen/logrus`
-
-    `example.com/ee/people/saas/minicorehr/biz/dal`
-    `example.com/ee/people/saas/minicorehr/biz/models`
-    _ `example.com/ee/people/saas/minicorehr/biz/models/db`
+    _ `unsafe`
 )
 """
 
