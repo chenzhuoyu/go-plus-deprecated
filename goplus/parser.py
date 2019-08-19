@@ -311,6 +311,56 @@ class Parser:
             else:
                 return self._should(self._next(), TokenType.Operator, '(')
 
+    def _prune_expression_tree(self, expr: Expression) -> Expression:
+        if isinstance(expr.left, Primary):
+            expr = self._prune_expression_primary(expr)
+        else:
+            expr.left = self._prune_expression_tree(expr.left)
+
+        # prune right expression
+        if expr.right is not None:
+            expr.right = self._prune_expression_tree(expr.right)
+
+        # promote the left term if no operator and right term present
+        if expr.op is not None:
+            return expr
+        elif expr.right is not None:
+            return expr
+        elif isinstance(expr.left, Primary):
+            return expr
+        else:
+            return expr.left
+
+    def _prune_expression_primary(self, expr: Expression) -> Expression:
+        for mod in expr.left.mods:
+            if isinstance(mod, Index):
+                self._prune_expression_primary_index(mod)
+            elif isinstance(mod, Slice):
+                self._prune_expression_primary_slice(mod)
+            elif isinstance(mod, Arguments):
+                self._prune_expression_primary_arguments(mod)
+        else:
+            if not isinstance(expr.left.val, Expression):
+                return expr
+            elif not expr.left.mods:
+                return self._prune_expression_tree(expr.left.val)
+            else:
+                expr.left.val = self._prune_expression_tree(expr.left.val)
+                return expr
+
+    def _prune_expression_primary_index(self, mod: Index):
+        mod.expr = self._prune_expression_tree(mod.expr)
+
+    def _prune_expression_primary_slice(self, mod: Slice):
+        mod.pos = mod.pos and self._prune_expression_tree(mod.pos)
+        mod.len = mod.len and self._prune_expression_tree(mod.len)
+        mod.cap = mod.cap and self._prune_expression_tree(mod.cap)
+
+    def _prune_expression_primary_arguments(self, mod: Arguments):
+        for i, arg in enumerate(mod.args):
+            if isinstance(arg, Expression):
+                mod.args[i] = self._prune_expression_tree(arg)
+
     ### Basic Name Parser ###
 
     def _parse_name(self) -> Name:
@@ -512,9 +562,11 @@ class Parser:
         new.right = self._parse_expr(prec)
         return new
 
-    def _parse_unary(self) -> Union[Primary, Expression]:
+    def _parse_unary(self) -> Expression:
         if not self._is_ops(UNARY_OPERATORS):
-            return self._parse_primary()
+            ret = Expression(self._peek())
+            ret.left = self._parse_primary()
+            return ret
         else:
             tk = self._next()
             ret = Expression(tk)
@@ -763,8 +815,7 @@ class Parser:
             args.append(self._parse_expression())
 
     def _parse_expression(self) -> Expression:
-        # TODO: prune expression tree
-        return self._parse_expr(prec = 0)
+        return self._prune_expression_tree(self._parse_expr(prec = 0))
 
     ### Top Level Parsers --- Functions & Methods ###
 
