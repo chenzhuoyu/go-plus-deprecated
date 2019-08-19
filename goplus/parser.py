@@ -13,13 +13,32 @@ from .ast import TypeSpec
 from .ast import Function
 from .ast import ImportSpec
 
+from .ast import Int
 from .ast import Name
+from .ast import Rune
+from .ast import Float
 from .ast import String
+from .ast import Complex
 from .ast import Operator
 
 from .ast import Package
 from .ast import Primary
+from .ast import Conversion
 from .ast import Expression
+
+from .ast import Lambda
+from .ast import Element
+from .ast import Operand
+from .ast import Composite
+from .ast import LiteralType
+from .ast import LiteralValue
+from .ast import VarArrayType
+
+from .ast import Index
+from .ast import Slice
+from .ast import Selector
+from .ast import Arguments
+from .ast import Assertion
 
 from .ast import Type
 from .ast import MapType
@@ -32,6 +51,7 @@ from .ast import PointerType
 from .ast import FunctionType
 from .ast import InterfaceType
 
+from .ast import ImportHere
 from .ast import StructField
 from .ast import ChannelDirection
 
@@ -41,6 +61,14 @@ from .tokenizer import Tokenizer
 
 from .tokenizer import TokenType
 from .tokenizer import TokenValue
+
+LIT_NODES = {
+    TokenType.Int     : Int,
+    TokenType.Rune    : Rune,
+    TokenType.Float   : Float,
+    TokenType.String  : String,
+    TokenType.Complex : Complex,
+}
 
 END_TOKENS = {
     TokenType.Int,
@@ -97,6 +125,12 @@ BINARY_OPERATORS = [
     {'+' , '-' , '|', '^'},
     {'*' , '/' , '%', '<<', '>>', '&', '&^'},
 ]
+
+ARGUMENT_OPERATORS = {
+    ',',
+    ')',
+    '...',
+}
 
 def _is_end_token(tk: Token):
     return (tk.kind in END_TOKENS) or \
@@ -181,16 +215,16 @@ class Parser:
         else:
             return tk
 
-    def _semicolon(self):
+    def _delimiter(self, delim: str):
         tk = self._peek()
         tt, tv = tk.kind, tk.value
 
-        # must be either ')', '}' or ';'
-        if tt != TokenType.Operator or tv not in (';', ')', '}'):
-            raise self._error(tk, '\';\', \')\', \'}\' or new line expected')
+        # must be either ')', '}' or the delimiter
+        if tt != TokenType.Operator or tv not in (delim, ')', '}'):
+            raise self._error(tk, '%s, \')\', \'}\' or new line expected' % repr(delim))
 
-        # skip the actual ';'
-        if tv == ';':
+        # skip the actual delimiter
+        if tv == delim:
             self._next()
 
     ### State Management ###
@@ -204,11 +238,46 @@ class Parser:
 
     ### Helper Functions ###
 
+    def _add_names(self, ret: List[StructField], vt: Type, names: List[Token]):
+        for name in names:
+            self._add_field(ret, vt, name, name = name)
+
+    def _add_field(self, ret: List[StructField], vt: Type, tk: Token, name: Optional[Token] = None):
+        sf = StructField(tk)
+        sf.type = vt
+        sf.name = Name(name) if name else None
+        ret.append(sf)
+
+    def _make_named_ptr(self, tk: Token, vt: NamedType) -> PointerType:
+        ret = PointerType(tk)
+        ret.base = vt
+        return ret
+
+    ### Type Guessing Functions ###
+
     def _is_ops(self, ops: Set[str]) -> bool:
         tk = self._peek()
         return tk.value in ops and tk.kind == TokenType.Operator
 
-    def _is_type(self) -> bool:
+    def _is_literal_type(self) -> bool:
+        with self._Scope(self):
+            try:
+                self._parse_literal_type()
+            except SyntaxError:
+                return False
+            else:
+                return self._should(self._next(), TokenType.Operator, '{')
+
+    def _is_argument_type(self) -> bool:
+        with self._Scope(self):
+            try:
+                self._parse_type()
+            except SyntaxError:
+                return False
+            else:
+                return self._is_ops(ARGUMENT_OPERATORS)
+
+    def _is_probably_type(self) -> bool:
         tk = self._peek()
         tt, tv = tk.kind, tk.value
 
@@ -231,46 +300,61 @@ class Parser:
         # try match rule :: Type = '(' Type ')' .
         with self._Scope(self):
             self._next()
-            return self._is_type()
+            return self._is_probably_type()
 
-    def _add_names(self, ret: List[StructField], vt: Type, names: List[Token]):
-        for name in names:
-            self._add_field(ret, vt, name, name = name)
+    def _is_conversion_type(self) -> bool:
+        with self._Scope(self):
+            try:
+                self._parse_type()
+            except SyntaxError:
+                return False
+            else:
+                return self._should(self._next(), TokenType.Operator, '(')
 
-    def _add_field(self, ret: List[StructField], vt: Type, tk: Token, name: Optional[Token] = None):
-        sf = StructField(tk)
-        sf.type = vt
-        ret.append(sf)
-
-        # set the field name, if any
-        if name is not None:
-            sf.name = Name(name)
-            sf.name.name = name.value
-
-    def _make_named_ptr(self, tk: Token, vt: NamedType) -> PointerType:
-        ret = PointerType(tk)
-        ret.base = vt
-        return ret
-
-    ### Atomic Parsers ###
+    ### Basic Name Parser ###
 
     def _parse_name(self) -> Name:
-        tk = self._next()
-        ret = Name(self._require(tk, TokenType.Name))
-        ret.name = tk.value
+        return Name(self._require(self._next(), TokenType.Name))
+
+    ### Nested Parsers ###
+
+    def _parse_nested_end(self, ret: Union[Type, Expression]) -> Union[Type, Expression]:
+        self._require(self._next(), TokenType.Operator, ')')
         return ret
+
+    def _parse_nested_type(self) -> Type:
+        self._next()
+        return self._parse_nested_end(self._parse_type())
+
+    def _parse_nested_expr(self) -> Expression:
+        self._next()
+        return self._parse_nested_end(self._parse_expression())
+
+    ### Literal Type Parser ###
+
+    def _parse_literal_type(self) -> LiteralType:
+        if self._should(self._peek(), TokenType.Keyword, 'map'):
+            return self._parse_map_type()
+        elif self._should(self._peek(), TokenType.Operator, '['):
+            return self._parse_list_type(for_literal = True)
+        elif self._should(self._peek(), TokenType.Name):
+            return self._parse_named_type()
+        elif self._should(self._peek(), TokenType.Keyword, 'struct'):
+            return self._parse_struct_type()
+        else:
+            raise self._error(self._peek(), 'literal type specifier expected')
 
     ### Language Structures --- Types ###
 
     def _parse_type(self) -> Type:
-        if self._should(self._peek(), TokenType.Operator, '('):
-            return self._parse_nested()
-        elif self._should(self._peek(), TokenType.Keyword, 'map'):
+        if self._should(self._peek(), TokenType.Keyword, 'map'):
             return self._parse_map_type()
         elif self._should(self._peek(), TokenType.Operator, '['):
-            return self._parse_list_type()
+            return self._parse_list_type(for_literal = False)
         elif self._should(self._peek(), TokenType.Name):
             return self._parse_named_type()
+        elif self._should(self._peek(), TokenType.Operator, '('):
+            return self._parse_nested_type()
         elif self._should(self._peek(), TokenType.Keyword, 'struct'):
             return self._parse_struct_type()
         elif self._should(self._peek(), TokenType.Keyword, 'chan'):
@@ -286,14 +370,6 @@ class Parser:
         else:
             raise self._error(self._peek(), 'type specifier expected')
 
-    def _parse_nested(self) -> Type:
-        self._next()
-        return self._parse_nested_end(self._parse_type())
-
-    def _parse_nested_end(self, ret: Type) -> Type:
-        self._require(self._next(), TokenType.Operator, ')')
-        return ret
-
     def _parse_map_type(self) -> MapType:
         ret = MapType(self._next())
         ret.key = self._parse_type()
@@ -301,13 +377,16 @@ class Parser:
         ret.elem = self._parse_type()
         return ret
 
-    def _parse_list_type(self) -> Union[ArrayType, SliceType]:
+    def _parse_list_type(self, for_literal: bool) -> Union[ArrayType, SliceType, VarArrayType]:
         tk = self._next()
         ret = SliceType(tk)
 
         # check for array length specifier
         if self._should(self._peek(), TokenType.Operator, ']'):
             self._next()
+        elif self._should(self._peek(), TokenType.Operator, '...') and for_literal:
+            ret = VarArrayType(tk)
+            self._require(self._next(), TokenType.Operator, ']')
         else:
             ret = ArrayType(tk)
             ret.len = self._parse_expression()
@@ -320,10 +399,7 @@ class Parser:
     def _parse_named_type(self) -> NamedType:
         tk = self._next()
         ret = NamedType(tk)
-
-        # assume it's a bare name
         ret.name = Name(tk)
-        ret.name.name = tk.value
 
         # check for qualified identifer
         if not self._should(self._peek(), TokenType.Operator, '.'):
@@ -355,8 +431,8 @@ class Parser:
                 self._next()
                 names.append(self._require(self._next(), TokenType.Name))
 
-            # normal fields
-            if self._is_type():
+            # normal fields, an approximated guessing is good enough
+            if self._is_probably_type():
                 self._add_names(ret, self._parse_type(), names)
 
             # not followed by a type, probably an embedded field
@@ -386,7 +462,7 @@ class Parser:
         # parse every field
         while not self._should(self._peek(), TokenType.Operator, '}'):
             self._parse_field_decl(ret.fields)
-            self._semicolon()
+            self._delimiter(';')
 
         # skip the '}' operator
         self._next()
@@ -433,7 +509,7 @@ class Parser:
         new = Expression(self._peek())
         new.op = Operator(op)
         new.left = val
-        new.right = self._parse_expr(prec + 1)
+        new.right = self._parse_expr(prec)
         return new
 
     def _parse_unary(self) -> Union[Primary, Expression]:
@@ -453,13 +529,238 @@ class Parser:
         # check for operators of this precedence
         while self._is_ops(BINARY_OPERATORS[prec]):
             tk = self._next()
-            ret = self._parse_term(prec, tk, ret)
+            ret = self._parse_term(prec + 1, tk, ret)
 
         # all done
         return ret
 
     def _parse_primary(self) -> Primary:
-        pass
+        ret = Primary(self._peek())
+        ret.val = self._parse_primary_val()
+        return self._parse_primary_mods(ret)
+
+    def _parse_primary_val(self) -> Operand:
+        tk = self._peek()
+        node = LIT_NODES.get(tk.kind)
+
+        # basic literals
+        if node is not None:
+            return node(self._next())
+
+        # lambda functions
+        elif self._should(tk, TokenType.Keyword, 'func'):
+            return self._parse_lambda()
+
+        # a type specifier followed by a '{', it's a composite literal
+        elif self._is_literal_type():
+            return self._parse_composite(with_type = True)
+
+        # a type specifier followed by a '(', it's a type conversion
+        elif self._is_conversion_type():
+            return self._parse_conversion()
+
+        # standard identifiers (which might be a package name, but
+        # we cannot distinguish package names from normal identifiers
+        # in the parsing phase, it will be handled by the type inferrer)
+        elif self._should(tk, TokenType.Name):
+            return self._parse_name()
+
+        # nested expressions
+        elif self._should(tk, TokenType.Operator, '('):
+            return self._parse_nested_expr()
+
+        # composite literals without literal type
+        elif self._should(tk, TokenType.Operator, '{'):
+            return self._parse_composite(with_type = False)
+
+        # otherwise it's a syntax error
+        else:
+            raise self._error(tk, 'operands expected, got %s' % repr(tk))
+
+    def _parse_primary_mods(self, ret: Primary) -> Primary:
+        tk = self._peek()
+        tt, tv = tk.kind, tk.value
+
+        # chain every modifier
+        while tt == TokenType.Operator:
+            if tv == '[':
+                ret.mods.append(self._parse_slice())
+            elif tv == '.':
+                ret.mods.append(self._parse_selector())
+            elif tv == '(':
+                ret.mods.append(self._parse_arguments())
+            else:
+                break
+
+            # locate the next token
+            tk = self._peek()
+            tt, tv = tk.kind, tk.value
+
+        # all done
+        return ret
+
+    def _parse_lambda(self) -> Lambda:
+        pass    # TODO: lambda
+
+    def _parse_composite(self, with_type: bool) -> Composite:
+        ret = Composite(self._peek())
+        ret.type = self._parse_literal_type() if with_type else None
+        ret.value = self._parse_composite_val()
+        return ret
+
+    def _parse_composite_val(self) -> LiteralValue:
+        tk = self._next()
+        ret = LiteralValue(self._require(tk, TokenType.Operator, '{'))
+
+        # parse every element
+        while not self._should(self._peek(), TokenType.Operator, '}'):
+            ret.items.append(self._parse_composite_elem())
+            self._delimiter(',')
+
+        # skip the '}'
+        self._next()
+        return ret
+
+    def _parse_composite_elem(self) -> Element:
+        tk = self._peek()
+        ret = Element(tk)
+
+        # check for literal value
+        if not self._should(tk, TokenType.Operator, '{'):
+            ret.value = self._parse_expression()
+        else:
+            ret.value = self._parse_composite_val()
+
+        # plain item list
+        if not self._should(self._peek(), TokenType.Operator, ':'):
+            return ret
+
+        # skip the ':'
+        self._next()
+        ret.key = ret.value
+
+        # check for literal value
+        if not self._should(tk, TokenType.Operator, '{'):
+            ret.value = self._parse_expression()
+        else:
+            ret.value = self._parse_composite_val()
+
+        # all done
+        return ret
+
+    def _parse_conversion(self) -> Conversion:
+        ret = Conversion(self._peek())
+        ret.type = self._parse_type()
+        ret.value = self._parse_conversion_expr()
+        return ret
+
+    def _parse_conversion_expr(self) -> Expression:
+        self._require(self._peek(), TokenType.Operator, '(')
+        return self._parse_nested_expr()
+
+    def _parse_slice(self) -> Union[Index, Slice]:
+        tk = self._next()
+        ret = Slice(self._require(tk, TokenType.Operator, '['))
+
+        # ':' encountered, must be a slice
+        if self._should(self._peek(), TokenType.Operator, ':'):
+            self._next()
+            ret.pos = None
+
+        # otherwise assume it's an index
+        else:
+            idx = Index(tk)
+            idx.expr = ret.pos = self._parse_expression()
+
+            # then it should ends with a ']', otherwise it must be a ':'
+            if not self._should(self._peek(), TokenType.Operator, ':'):
+                self._require(self._next(), TokenType.Operator, ']')
+                return idx
+
+        # optional length expression
+        if self._should(self._peek(), TokenType.Operator, ':'):
+            self._next()
+            ret.len = None
+
+            # it might be an empty expression
+            if not self._should(self._peek(), TokenType.Operator, ':'):
+                ret.len = self._parse_expression()
+
+        # optional capacity expression
+        if self._should(self._peek(), TokenType.Operator, ':'):
+            self._next()
+            ret.cap = None
+
+            # it might be an empty expression
+            if not self._should(self._peek(), TokenType.Operator, ']'):
+                ret.cap = self._parse_expression()
+
+        # must close with a ']'
+        self._require(self._next(), TokenType.Operator, ']')
+        return ret
+
+    def _parse_selector(self) -> Union[Selector, Assertion]:
+        tk = self._next()
+        tk = self._require(tk, TokenType.Operator, '.')
+
+        # might be type assertion
+        if not self._should(self._peek(), TokenType.Operator, '('):
+            ret = Selector(tk)
+            ret.attr = self._parse_name()
+        else:
+            ret = Assertion(tk)
+            ret.type = self._parse_nested_type()
+
+        # all done
+        return ret
+
+    def _parse_arguments(self) -> Arguments:
+        tk = self._next()
+        ret = Arguments(self._require(tk, TokenType.Operator, '('))
+
+        # empty invocation
+        if self._should(self._peek(), TokenType.Operator, ')'):
+            self._next()
+            return ret
+
+        # special case of the first argument, but there is a corner case:
+        # in expression `foo(name, 1, 2)`, it is not possible to determain
+        # whether `name` is a type name or a variable or a constant during the
+        # parsing stage
+        #
+        # this can only happen for a few functions in real life, like `make`
+        # and `new`, but since we can assign completely irrelevant values to
+        # them, it is not possible to tell whether they are the original one
+        # or not
+        #
+        # so we just simply parse them as `type specifier`, the type inferrer
+        # will take care of this situation
+        if self._is_argument_type():
+            ret.args.append(self._parse_type())
+        else:
+            ret.args.append(self._parse_expression())
+
+        # have more arguments
+        while self._should(self._peek(), TokenType.Operator, ','):
+            self._next()
+            self._parse_argument_item(self._peek(), ret.args)
+
+        # variadic invoking
+        if self._should(self._peek(), TokenType.Operator, '...'):
+            self._next()
+            ret.var = True
+
+            # optional tail comma
+            if self._should(self._peek(), TokenType.Operator, ','):
+                self._next()
+
+        # must end with a ')'
+        self._require(self._next(), TokenType.Operator, ')')
+        return ret
+
+    def _parse_argument_item(self, tk: Token, args: List[Expression]):
+        if not self._should(tk, TokenType.Operator, ')'):
+            args.append(self._parse_expression())
 
     def _parse_expression(self) -> Expression:
         # TODO: prune expression tree
@@ -473,24 +774,20 @@ class Parser:
     ### Top Level Parsers --- Variables, Types, Constants & Imports ###
 
     def _parse_var_spec(self, tk: Token, ret: List[InitSpec], readonly: bool):
-        vn = Name(tk)
-        vn.name = self._require(tk, TokenType.Name).value
-
-        # create the variable spec
         val = InitSpec(tk)
-        val.names.append(vn)
+        val.names.append(Name(self._require(tk, TokenType.Name)))
 
         # const a, b, c, ...
         while self._should(self._peek(), TokenType.Operator, ','):
             self._next()
             val.names.append(self._parse_name())
 
-        # optional const type
-        if self._is_type():
+        # optional const type, an approximated guessing is good enough
+        if self._is_probably_type():
             val.type = self._parse_type()
 
-        # the '=' operator, required under read-only mode
-        if readonly or self._should(self._peek(), TokenType.Operator, '='):
+        # the '=' operator, required under read-only mode for the first item
+        if (readonly and self.iota == 0) or self._should(self._peek(), TokenType.Operator, '='):
             self._require(self._next(), TokenType.Operator, '=')
             val.values.append(self._parse_expression())
 
@@ -499,8 +796,13 @@ class Parser:
                 self._next()
                 val.values.append(self._parse_expression())
 
-        # but at least one of them should be present
-        if not val.type and not val.values:
+        # bare identifiers for remaining consts, just copy the previous expressions
+        elif readonly and self.iota > 0:
+            assert ret
+            val.values = ret[-1].values[:]
+
+        # otherwise a type declaration is required
+        elif not val.type:
             raise self._error(self._peek(), '\'=\' or type specifier expected')
 
         # add to variable / const list
@@ -510,7 +812,6 @@ class Parser:
     def _parse_type_spec(self, tk: Token, ret: List[TypeSpec]):
         ts = TypeSpec(tk)
         ts.name = Name(self._require(tk, TokenType.Name))
-        ts.name.name = tk.value
 
         # check for type aliasing
         if self._should(self._peek(), TokenType.Operator, '='):
@@ -525,10 +826,15 @@ class Parser:
         imp = ImportSpec(tk)
         tt, tv = tk.kind, tk.value
 
-        # import . 'xxx' / import xxx 'xxx'
-        if tt == TokenType.Name or (tv == '.' and tt == TokenType.Operator):
-            imp.alias, tk = Name(tk), self._next()
-            imp.alias.name = tv
+        # import xxx 'xxx'
+        if tt == TokenType.Name:
+            imp.alias = Name(tk)
+            tk = self._next()
+
+        # import . 'xxx'
+        elif tt == TokenType.Operator and tv == '.':
+            imp.alias = ImportHere(tk)
+            tk = self._next()
 
         # add to import list
         imp.path = String(self._require(tk, TokenType.String))
@@ -558,7 +864,7 @@ class Parser:
         while not self._should(self._peek(), TokenType.Operator, ')'):
             parser_func(self._next(), ret)
             self._iota_increment()
-            self._semicolon()
+            self._delimiter(';')
 
     ### Generic Parsers ###
 
@@ -590,18 +896,18 @@ class Parser:
         # parse the package name
         ret = Package(tk)
         self._parse_package(ret)
-        self._semicolon()
+        self._delimiter(';')
 
         # imports go before other declarations
         while self._should(self._peek(), TokenType.Keyword, 'import'):
             self._next()
             self._parse_declarations(ret.imports, self._parse_import_spec)
-            self._semicolon()
+            self._delimiter(';')
 
         # parse other top-level declarations
         while self._should(self._peek(), TokenType.Keyword):
             self._parse_decl(self._next(), ret)
-            self._semicolon()
+            self._delimiter(';')
 
         # must be EOF
         if self._should(self._peek(), TokenType.End):

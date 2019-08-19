@@ -15,6 +15,7 @@ from typing import Sequence
 
 from .tokenizer import Token
 from .tokenizer import TokenType
+from .tokenizer import TokenValue
 
 class Node:
     row  : int
@@ -71,24 +72,35 @@ class Node:
 
 ### Basic Elements ###
 
-class Name(Node):
-    name: str
-
-class String(Node):
-    value: bytes
+class Value(Node):
+    kind  : TokenType
+    value : TokenValue
 
     def __init__(self, tk: Token):
         super().__init__(tk)
         self.value = tk.value
-        assert tk.kind == TokenType.String
+        assert tk.kind == self.kind
 
-class Operator(Node):
-    op: str
+class Int(Value):
+    kind = TokenType.Int
 
-    def __init__(self, tk: Token):
-        self.op = tk.value
-        super().__init__(tk)
-        assert tk.kind == TokenType.Operator
+class Name(Value):
+    kind = TokenType.Name
+
+class Rune(Value):
+    kind = TokenType.Rune
+
+class Float(Value):
+    kind = TokenType.Float
+
+class String(Value):
+    kind = TokenType.String
+
+class Complex(Value):
+    kind = TokenType.Complex
+
+class Operator(Value):
+    kind = TokenType.Operator
 
 ### Language Structures ###
 
@@ -144,10 +156,10 @@ class PointerType(Node):
     base: 'Type'
 
 class FunctionType(Node):
-    pass
+    pass    # TODO: define this
 
 class InterfaceType(Node):
-    pass
+    pass    # TODO: define this
 
 Type = Union[
     MapType,
@@ -162,7 +174,16 @@ Type = Union[
 ]
 
 class Primary(Node):
-    pass
+    val  : 'Operand'
+    mods : List['Modifier']
+
+    def __init__(self, tk: Token):
+        self.mods = []
+        super().__init__(tk)
+
+class Conversion(Node):
+    type  : Type
+    value : 'Expression'
 
 class Expression(Node):
     op    : Optional[Operator]
@@ -173,6 +194,94 @@ class Expression(Node):
         self.op = None
         self.right = None
         super().__init__(tk)
+
+class Lambda(Node):
+    pass    # TODO: define this
+
+class VarArrayType(Node):
+    elem: Type
+
+LiteralType = Union[
+    MapType,
+    ArrayType,
+    NamedType,
+    SliceType,
+    StructType,
+    VarArrayType,
+]
+
+class LiteralValue(Node):
+    items: List['Element']
+
+    def __init__(self, tk: Token):
+        self.items = []
+        super().__init__(tk)
+
+class Element(Node):
+    key   : Optional[Union[Expression, LiteralValue]]
+    value : Union[Expression, LiteralValue]
+
+    def __init__(self, tk: Token):
+        self.key = None
+        super().__init__(tk)
+
+class Composite(Node):
+    type  : Optional[LiteralType]
+    value : LiteralValue
+
+    def __init__(self, tk: Token):
+        self.type = None
+        super().__init__(tk)
+
+Operand = Union[
+    Int,
+    Name,
+    Rune,
+    Float,
+    Lambda,
+    String,
+    Complex,
+    Composite,
+    Conversion,
+    Expression,
+]
+
+class Index(Node):
+    expr: Expression
+
+class Slice(Node):
+    pos: Optional[Expression]
+    len: Optional[Expression]
+    cap: Optional[Union[bool, Expression]]
+
+    def __init__(self, tk: Token):
+        self.pos = None
+        self.len = None
+        self.cap = False
+        super().__init__(tk)
+
+class Selector(Node):
+    attr: Name
+
+class Arguments(Node):
+    var  : bool
+    args : List[Union[Type, Expression]]
+
+    def __init__(self, tk: Token):
+        self.var = False
+        self.args = []
+        super().__init__(tk)
+
+class Assertion(Node):
+    type: Type
+
+Modifier = Union[
+    Index,
+    Slice,
+    Selector,
+    Arguments,
+    Assertion,
+]
 
 ### Top Level Declarations ###
 
@@ -199,11 +308,16 @@ class TypeSpec(Node):
         super().__init__(tk)
 
 class Function(Node):
-    pass
+    pass    # TODO: define this
+
+class ImportHere(Node):
+    def __init__(self, tk: Token):
+        super().__init__(tk)
+        assert tk.kind == TokenType.Operator and tk.value == '.'
 
 class ImportSpec(Node):
     path  : String
-    alias : Optional[Name]
+    alias : Optional[Union[Name, ImportHere]]
 
     def __init__(self, tk: Token):
         self.alias = None
