@@ -228,7 +228,8 @@ class Expression(Node):
         super().__init__(tk)
 
 class Lambda(Node):
-    pass    # TODO: define this
+    body      : 'CompoundStatement'
+    signature : FunctionSignature
 
 class VarArrayType(Node):
     elem: Type
@@ -315,6 +316,16 @@ Modifier = Union[
     Assertion,
 ]
 
+class Statement(Node):
+    pass    # TODO: define this
+
+class CompoundStatement(Node):
+    body: List[Statement]
+
+    def __init__(self, tk: Token):
+        self.body = []
+        super().__init__(tk)
+
 ### Top Level Declarations ###
 
 class InitSpec(Node):
@@ -340,7 +351,14 @@ class TypeSpec(Node):
         super().__init__(tk)
 
 class Function(Node):
-    pass    # TODO: define this
+    name      : Name
+    body      : CompoundStatement
+    receiver  : Optional[FunctionArgument]
+    signature : FunctionSignature
+
+    def __init__(self, tk: Token):
+        self.receiver = None
+        super().__init__(tk)
 
 class ImportHere(Node):
     def __init__(self, tk: Token):

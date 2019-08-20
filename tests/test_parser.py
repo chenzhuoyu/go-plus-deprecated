@@ -62,8 +62,8 @@ type Block interface {
 
 // A Mutex is a data type with two methods, Lock and Unlock.
 type Mutex struct         { /* Mutex fields */ }
-# func (m *Mutex) Lock()    { /* Lock implementation */ }
-# func (m *Mutex) Unlock()  { /* Unlock implementation */ }
+func (m *Mutex) Lock()    // { /* Lock implementation */ }
+func (m *Mutex) Unlock()  // { /* Unlock implementation */ }
 
 // NewMutex has the same composition as Mutex but its method set is empty.
 type NewMutex Mutex
@@ -123,12 +123,12 @@ const (
 const x = iota  // x == 0
 const y = iota  // y == 0
 
-# const (
-#     bit0, mask0 = 1 << iota, 1<<iota - 1  // bit0 == 1, mask0 == 0  (iota == 0)
-#     bit1, mask1                           // bit1 == 2, mask1 == 1  (iota == 1)
-#     _, _                                  //                        (iota == 2, unused)
-#     bit3, mask3                           // bit3 == 8, mask3 == 7  (iota == 3)
-# )
+const (
+    bit0, mask0 = 1 << iota, 1<<iota - 1  // bit0 == 1, mask0 == 0  (iota == 0)
+    bit1, mask1                           // bit1 == 2, mask1 == 1  (iota == 1)
+    _, _                                  //                        (iota == 2, unused)
+    bit3, mask3                           // bit3 == 8, mask3 == 7  (iota == 3)
+)
 
 var i int
 var U, V, W float64

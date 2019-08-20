@@ -25,6 +25,7 @@ from .ast import Package
 from .ast import Primary
 from .ast import Conversion
 from .ast import Expression
+from .ast import CompoundStatement
 
 from .ast import Lambda
 from .ast import Element
@@ -315,6 +316,14 @@ class Parser:
                 return False
             else:
                 return self._should(self._next(), TokenType.Operator, '(')
+
+    def _ensure_receiver_args(self, args: List[FunctionArgument]) -> FunctionArgument:
+        if len(args) != 1:
+            raise self._error(self._peek(), 'method has multiple receivers')
+        else:
+            return args[0]
+
+    ### Expression Prunning Functions ###
 
     def _prune_expression_tree(self, expr: Expression) -> Expression:
         if isinstance(expr.left, Primary):
@@ -614,9 +623,12 @@ class Parser:
         arg.name = self._parse_name()
 
         # check for variadic parameter
-        if for_args and self._should(self._peek(), TokenType.Operator, '...'):
-            var = True
-            self._next()
+        if self._should(self._peek(), TokenType.Operator, '...'):
+            if not for_args:
+                raise self._error(self._peek(), 'cannot use ... in receiver or result parameter list')
+            else:
+                var = True
+                self._next()
 
         # parse the type
         arg.type = self._parse_type()
@@ -679,9 +691,12 @@ class Parser:
                 raise self._error(tk, 'parameter name expected')
 
             # maybe variadic
-            if for_args and self._should(tk, TokenType.Operator, '...'):
-                var = True
-                self._next()
+            if self._should(tk, TokenType.Operator, '...'):
+                if not for_args:
+                    raise self._error(tk, 'cannot use ... in receiver or result parameter list')
+                else:
+                    var = True
+                    self._next()
 
             # parse the type
             vn = False
@@ -693,6 +708,11 @@ class Parser:
         # must end with a ')'
         self._require(self._next(), TokenType.Operator, ')')
         return var, ret
+
+    ### Language Structures --- Statements ###
+
+    def _parse_compound_statement(self) -> CompoundStatement:
+        pass    # TODO: function body
 
     ### Language Structures --- Expressions ###
 
@@ -799,7 +819,10 @@ class Parser:
         return ret
 
     def _parse_lambda(self) -> Lambda:
-        pass    # TODO: lambda
+        ret = Lambda(self._next())
+        ret.signature = self._parse_signature()
+        ret.body = self._parse_compound_statement()
+        return ret
 
     def _parse_composite(self, with_type: bool) -> Composite:
         ret = Composite(self._peek())
@@ -967,7 +990,19 @@ class Parser:
     ### Top Level Parsers --- Functions & Methods ###
 
     def _parse_function(self, ret: List[Function]):
-        pass    # TODO: function
+        tk = self._peek()
+        func = Function(tk)
+
+        # check for function receiver
+        if self._should(tk, TokenType.Operator, '('):
+            _, args = self._parse_parameters(for_args = False)
+            func.receiver = self._ensure_receiver_args(args)
+
+        # parse the signature and function body
+        func.name = self._parse_name()
+        func.signature = self._parse_signature()
+        func.body = self._parse_compound_statement()
+        ret.append(func)
 
     ### Top Level Parsers --- Variables, Types, Constants & Imports ###
 
