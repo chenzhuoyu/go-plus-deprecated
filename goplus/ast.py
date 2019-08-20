@@ -4,6 +4,7 @@ import json
 import inspect
 
 from enum import IntFlag
+from .utils import AnnotationSlots
 
 from typing import Any
 from typing import Set
@@ -17,7 +18,7 @@ from .tokenizer import Token
 from .tokenizer import TokenType
 from .tokenizer import TokenValue
 
-class Node:
+class Node(metaclass = AnnotationSlots):
     row  : int
     col  : int
     file : str
@@ -35,7 +36,7 @@ class Node:
             return {}
 
         # add to path
-        ret = {}
+        ret = {'__class__': self.__class__.__name__}
         path.add(id(self))
 
         # dump every exported attrs, except "row", "col" and "file"
@@ -132,11 +133,12 @@ class StructType(Node):
 
 class StructField(Node):
     type: 'Type'
-    tags: String
     name: Optional[Name]
+    tags: Optional[String]
 
     def __init__(self, tk: Token):
         self.name = None
+        self.tags = None
         super().__init__(tk)
 
 class ChannelDirection(IntFlag):
@@ -156,10 +158,40 @@ class PointerType(Node):
     base: 'Type'
 
 class FunctionType(Node):
-    pass    # TODO: define this
+    signature: 'FunctionSignature'
+
+class FunctionArgument(Node):
+    name: Optional[Name]
+    type: 'Type'
+
+    def __init__(self, tk: Token):
+        self.name = None
+        super().__init__(tk)
+
+class FunctionSignature(Node):
+    var  : bool
+    args : List[FunctionArgument]
+    rets : List[FunctionArgument]
+
+    def __init__(self, tk: Token):
+        self.var = False
+        self.args = []
+        self.rets = []
+        super().__init__(tk)
 
 class InterfaceType(Node):
-    pass    # TODO: define this
+    decls: List[Union[
+        NamedType,
+        'InterfaceMethod',
+    ]]
+
+    def __init__(self, tk: Token):
+        self.decls = []
+        super().__init__(tk)
+
+class InterfaceMethod(Node):
+    name      : Name
+    signature : FunctionSignature
 
 Type = Union[
     MapType,

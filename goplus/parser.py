@@ -52,8 +52,13 @@ from .ast import FunctionType
 from .ast import InterfaceType
 
 from .ast import ImportHere
-from .ast import StructField
 from .ast import ChannelDirection
+
+from .ast import StructField
+from .ast import InterfaceMethod
+
+from .ast import FunctionArgument
+from .ast import FunctionSignature
 
 from .tokenizer import State
 from .tokenizer import Token
@@ -542,10 +547,152 @@ class Parser:
         return ret
 
     def _parse_function_type(self) -> FunctionType:
-        pass    # TODO: function type
+        ret = FunctionType(self._next())
+        ret.signature = self._parse_signature()
+        return ret
 
     def _parse_interface_type(self) -> InterfaceType:
-        pass    # TODO: interface type
+        ret = InterfaceType(self._next())
+        self._require(self._next(), TokenType.Operator, '{')
+
+        # parse each signature
+        while not self._should(self._peek(), TokenType.Operator, '}'):
+            ret.decls.append(self._parse_interface_decl())
+            self._delimiter(';')
+
+        # skip the '}'
+        self._next()
+        return ret
+
+    def _parse_interface_decl(self) -> Union[NamedType, InterfaceMethod]:
+        st = self.save_state()
+        ret = self._parse_named_type()
+
+        # check for named types
+        if self._should(self._peek(), TokenType.Operator, ';'):
+            return ret
+
+        # no, it's a method declaration
+        self.load_state(st)
+        return self._parse_interface_method()
+
+    def _parse_interface_method(self) -> InterfaceMethod:
+        ret = InterfaceMethod(self._peek())
+        ret.name = self._parse_name()
+        ret.signature = self._parse_signature()
+        return ret
+
+    ### Language Structures --- Functions ###
+
+    def _parse_arg_name(self) -> FunctionArgument:
+        ret = FunctionArgument(self._peek())
+        ret.name = self._parse_name()
+        return ret
+
+    def _parse_arg_list(self) -> List[FunctionArgument]:
+        arg0 = self._parse_arg_name()
+        args = [arg0]
+
+        # parse remaining names
+        while self._should(self._peek(), TokenType.Operator, ','):
+            self._next()
+            args.append(self._parse_arg_name())
+
+        # parse the type
+        vt = self._parse_type()
+        arg0.type = vt
+
+        # copy the type to every identifier
+        for arg in args[1:]:
+            arg.type = vt
+        else:
+            return args
+
+    def _parse_arg_decl(self, tk: Token, for_args: bool) -> Tuple[bool, FunctionArgument]:
+        var = False
+        arg = FunctionArgument(tk)
+        arg.name = self._parse_name()
+
+        # check for variadic parameter
+        if for_args and self._should(self._peek(), TokenType.Operator, '...'):
+            var = True
+            self._next()
+
+        # parse the type
+        arg.type = self._parse_type()
+        return var, arg
+
+    def _parse_signature(self) -> FunctionSignature:
+        ret = FunctionSignature(self._peek())
+        ret.var, ret.args = self._parse_parameters(for_args = True)
+
+        # no return values
+        if self._should(self._peek(), TokenType.Operator, ';'):
+            return ret
+
+        # multiple return values
+        if self._should(self._peek(), TokenType.Operator, '('):
+            _, ret.rets = self._parse_parameters(for_args = False)
+            return ret
+
+        # single bare-type return value
+        rt = FunctionArgument(self._peek())
+        rt.type = self._parse_type()
+        ret.rets.append(rt)
+        return ret
+
+    def _parse_parameters(self, for_args: bool) -> Tuple[bool, List[FunctionArgument]]:
+        vn, ret, var = None, [], False
+        self._require(self._next(), TokenType.Operator, '(')
+
+        # parse every argument
+        while not var and not self._should(self._peek(), TokenType.Operator, ')'):
+            tk = self._peek()
+            st = self.save_state()
+
+            # try parsing as "name [...]Type"
+            if vn is not False:
+                try:
+                    var, arg = self._parse_arg_decl(tk, for_args)
+                except SyntaxError:
+                    self.load_state(st)
+                else:
+                    vn = True
+                    ret.append(arg)
+                    self._delimiter(',')
+                    continue
+
+            # not working, try "name1, name2, ..., nameX Type"
+            if vn is not False:
+                try:
+                    ret.extend(self._parse_arg_list())
+                except SyntaxError:
+                    self.load_state(st)
+                else:
+                    vn = True
+                    self._delimiter(',')
+                    continue
+
+            # not working either, must be a bare type
+            # the names must either all be present or all be absent
+            if vn is True:
+                raise self._error(tk, 'parameter name expected')
+
+            # maybe variadic
+            if for_args and self._should(tk, TokenType.Operator, '...'):
+                var = True
+                self._next()
+
+            # parse the type
+            vn = False
+            arg = FunctionArgument(tk)
+            arg.type = self._parse_type()
+            ret.append(arg)
+            self._delimiter(',')
+
+        # must end with a ')'
+        self._require(self._next(), TokenType.Operator, ')')
+        return var, ret
 
     ### Language Structures --- Expressions ###
 

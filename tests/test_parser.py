@@ -49,11 +49,16 @@ type TreeNode struct {
     value *Comparable
 }
 
-# type Block interface {
-#     BlockSize() int
-#     Encrypt(src, dst []byte)
-#     Decrypt(src, dst []byte)
-# }
+type Block interface {
+    EmbeddedInterface
+    BlockSize() int
+    Encrypt(src, dst []byte)
+    Decrypt(src, dst []byte)
+    Concat(a interface{}, args ...interface{})
+    MethodWithOnlyTypes(int, int)
+    MethodWithMultipleReturns(int, int) (int, error)
+    MethodWithMultipleNamedReturns(int, int) (a int, b error)
+}
 
 // A Mutex is a data type with two methods, Lock and Unlock.
 type Mutex struct         { /* Mutex fields */ }
@@ -140,6 +145,17 @@ var d = math.Sin(0.5)  // d is float64
 var i3 = 42            // i is int
 var t, ok = x.(T)      // t is T, ok is bool
 var n = nil            // illegal
+
+var (
+    f1 func()
+    f2 func(x int) int
+    f3 func(a, _ int, z float32) bool
+    f4 func(a, b int, z float32) (bool)
+    f5 func(prefix string, values ...int)
+    f6 func(a, b int, z float64, opt ...interface{}) (success bool)
+    f7 func(int, int, float64) (float64, *[]int)
+    f8 func(n int) func(p *T)
+)
 """
 
 class TestParser(unittest.TestCase):
