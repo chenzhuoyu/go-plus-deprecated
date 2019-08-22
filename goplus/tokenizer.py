@@ -246,9 +246,8 @@ class Tokenizer:
         return ch
 
     def _skip_eol(self):
-        while self._curr_char() not in ('', '\n'):
+        while self._peek_char() not in ('', '\n'):
             self._next_char()
-            self._peek_char()
 
     def _skip_char(self) -> str:
         self.save.col = self.state.col

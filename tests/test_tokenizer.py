@@ -174,7 +174,7 @@ string_vals = (
 multiline_string = r"""
 `\n
 \n`                  // same as "\\n\n\\n"
-"""
+""".strip()
 
 multiline_string_val = b'\\n\n\\n'
 
@@ -243,6 +243,23 @@ class TestTokenizer(unittest.TestCase):
     def test_string_errs(self):
         for val, err in zip(filter(None, map(str.strip, string_errs.splitlines())), string_err_vals):
             self.invalid(val, err)
+
+    def test_ellipsis(self):
+        tk = Tokenizer('a.....', '<test>')
+        token = tk.next()
+        self.assertEqual(TokenType.Name, token.kind)
+        self.assertEqual('a', token.value)
+        token = tk.next()
+        self.assertEqual(TokenType.Operator, token.kind)
+        self.assertEqual('...', token.value)
+        token = tk.next()
+        self.assertEqual(TokenType.Operator, token.kind)
+        self.assertEqual('.', token.value)
+        token = tk.next()
+        self.assertEqual(TokenType.Operator, token.kind)
+        self.assertEqual('.', token.value)
+        token = tk.next()
+        self.assertEqual(TokenType.End, token.kind)
 
 if __name__ == '__main__':
     unittest.main()

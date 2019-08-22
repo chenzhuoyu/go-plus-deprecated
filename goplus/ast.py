@@ -4,7 +4,7 @@ import json
 import inspect
 
 from enum import IntFlag
-from .utils import AnnotationSlots
+from .utils import StrictFields
 
 from typing import Any
 from typing import Set
@@ -18,7 +18,7 @@ from .tokenizer import Token
 from .tokenizer import TokenType
 from .tokenizer import TokenValue
 
-class Node(metaclass = AnnotationSlots):
+class Node(metaclass = StrictFields):
     row  : int
     col  : int
     file : str
@@ -120,26 +120,13 @@ class NamedType(Node):
     name    : Name
     package : Optional[Name]
 
-    def __init__(self, tk: Token):
-        self.package = None
-        super().__init__(tk)
-
 class StructType(Node):
     fields: List['StructField']
-
-    def __init__(self, tk: Token):
-        self.fields = []
-        super().__init__(tk)
 
 class StructField(Node):
     type: 'Type'
     name: Optional[Name]
     tags: Optional[String]
-
-    def __init__(self, tk: Token):
-        self.name = None
-        self.tags = None
-        super().__init__(tk)
 
 class ChannelDirection(IntFlag):
     Send = 0x01
@@ -150,34 +137,20 @@ class ChannelType(Node):
     dir  : ChannelDirection
     elem : 'Type'
 
-    def __init__(self, tk: Token):
-        super().__init__(tk)
-        self.dir = ChannelDirection.Both
-
 class PointerType(Node):
     base: 'Type'
 
 class FunctionType(Node):
-    signature: 'FunctionSignature'
+    type: 'FunctionSignature'
 
 class FunctionArgument(Node):
     name: Optional[Name]
     type: 'Type'
 
-    def __init__(self, tk: Token):
-        self.name = None
-        super().__init__(tk)
-
 class FunctionSignature(Node):
     var  : bool
     args : List[FunctionArgument]
     rets : List[FunctionArgument]
-
-    def __init__(self, tk: Token):
-        self.var = False
-        self.args = []
-        self.rets = []
-        super().__init__(tk)
 
 class InterfaceType(Node):
     decls: List[Union[
@@ -185,13 +158,9 @@ class InterfaceType(Node):
         'InterfaceMethod',
     ]]
 
-    def __init__(self, tk: Token):
-        self.decls = []
-        super().__init__(tk)
-
 class InterfaceMethod(Node):
-    name      : Name
-    signature : FunctionSignature
+    name: Name
+    type: FunctionSignature
 
 Type = Union[
     MapType,
@@ -209,10 +178,6 @@ class Primary(Node):
     val  : 'Operand'
     mods : List['Modifier']
 
-    def __init__(self, tk: Token):
-        self.mods = []
-        super().__init__(tk)
-
 class Conversion(Node):
     type  : Type
     value : 'Expression'
@@ -222,10 +187,17 @@ class Expression(Node):
     left  : Union[Primary, 'Expression']
     right : Optional['Expression']
 
-    def __init__(self, tk: Token):
-        self.op = None
-        self.right = None
-        super().__init__(tk)
+    def is_call(self) -> bool:
+        if self.op is not None:
+            return False
+        elif self.right is not None:
+            return False
+        elif not isinstance(self.left, Primary):
+            return False
+        elif not self.left.mods:
+            return False
+        else:
+            return isinstance(self.left.mods[-1], Arguments)
 
 class Lambda(Node):
     body      : 'CompoundStatement'
@@ -246,25 +218,13 @@ LiteralType = Union[
 class LiteralValue(Node):
     items: List['Element']
 
-    def __init__(self, tk: Token):
-        self.items = []
-        super().__init__(tk)
-
 class Element(Node):
     key   : Optional[Union[Expression, LiteralValue]]
     value : Union[Expression, LiteralValue]
 
-    def __init__(self, tk: Token):
-        self.key = None
-        super().__init__(tk)
-
 class Composite(Node):
     type  : Optional[LiteralType]
     value : LiteralValue
-
-    def __init__(self, tk: Token):
-        self.type = None
-        super().__init__(tk)
 
 Operand = Union[
     Int,
@@ -287,23 +247,12 @@ class Slice(Node):
     len: Optional[Expression]
     cap: Optional[Union[bool, Expression]]
 
-    def __init__(self, tk: Token):
-        self.pos = None
-        self.len = None
-        self.cap = False
-        super().__init__(tk)
-
 class Selector(Node):
     attr: Name
 
 class Arguments(Node):
     var  : bool
     args : List[Union[Type, Expression]]
-
-    def __init__(self, tk: Token):
-        self.var = False
-        self.args = []
-        super().__init__(tk)
 
 class Assertion(Node):
     type: Type
@@ -316,16 +265,6 @@ Modifier = Union[
     Assertion,
 ]
 
-class Statement(Node):
-    pass    # TODO: define this
-
-class CompoundStatement(Node):
-    body: List[Statement]
-
-    def __init__(self, tk: Token):
-        self.body = []
-        super().__init__(tk)
-
 ### Top Level Declarations ###
 
 class InitSpec(Node):
@@ -334,31 +273,16 @@ class InitSpec(Node):
     values   : List[Expression]
     readonly : bool
 
-    def __init__(self, tk: Token):
-        self.type = None
-        self.names = []
-        self.values = []
-        self.readonly = False
-        super().__init__(tk)
-
 class TypeSpec(Node):
     name     : Name
     type     : 'Type'
     is_alias : bool
 
-    def __init__(self, tk: Token):
-        self.is_alias = False
-        super().__init__(tk)
-
 class Function(Node):
     name      : Name
-    body      : CompoundStatement
+    type      : FunctionSignature
+    body      : Optional['CompoundStatement']
     receiver  : Optional[FunctionArgument]
-    signature : FunctionSignature
-
-    def __init__(self, tk: Token):
-        self.receiver = None
-        super().__init__(tk)
 
 class ImportHere(Node):
     def __init__(self, tk: Token):
@@ -369,10 +293,6 @@ class ImportSpec(Node):
     path  : String
     alias : Optional[Union[Name, ImportHere]]
 
-    def __init__(self, tk: Token):
-        self.alias = None
-        super().__init__(tk)
-
 class Package(Node):
     name    : Name
     vars    : List[InitSpec]
@@ -381,10 +301,122 @@ class Package(Node):
     consts  : List[InitSpec]
     imports : List[ImportSpec]
 
-    def __init__(self, tk: Token):
-        self.vars = []
-        self.funcs = []
-        self.types = []
-        self.consts = []
-        self.imports = []
-        super().__init__(tk)
+### Statements -- Basic Structures ###
+
+class Go(Node):
+    expr: Expression
+
+class If(Node):
+    cond   : Expression
+    init   : 'SimpleStatement'
+    body   : 'CompoundStatement'
+    branch : Optional[Union['If', 'CompoundStatement']]
+
+class For(Node):
+    cond: Optional[Expression]
+    init: Optional['SimpleStatement']
+    post: Optional['SimpleStatement']
+    body: 'CompoundStatement'
+
+class Defer(Node):
+    expr: Expression
+
+class Select(Node):
+    cases: List['SelectCase']
+
+class SelectCase(Node):
+    body: List['Statement']
+    expr: Optional[Union['Send', 'SelectReceive']]
+
+class SelectReceive(Node):
+    svd   : bool
+    vals  : Expression
+    terms : List[Union[Name, Expression]]
+
+class Switch(Node):
+    expr  : Optional[Expression]
+    init  : Optional['SimpleStatement']
+    cases : List['SwitchCase']
+
+class SwitchCase(Node):
+    vals: List[Expression]
+    body: List['Statement']
+
+class ForRange(Node):
+    svd   : bool
+    expr  : Expression
+    body  : 'CompoundStatement'
+    terms : List[Union[Name, Expression]]
+
+### Statements -- Control Flow Transfers ###
+
+class Goto(Node):
+    label: Name
+
+class Label(Node):
+    name: Name
+    body: 'Statement'
+
+class Return(Node):
+    vals: List[Expression]
+
+class Break(Node):
+    label: Optional[Name]
+
+class Continue(Node):
+    label: Optional[Name]
+
+class Fallthrough(Node):
+    pass
+
+### Statements -- Simple Statements ###
+
+class Send(Node):
+    chan: Expression
+    expr: Expression
+
+class Empty(Node):
+    pass
+
+class IncDec(Node):
+    incr: bool
+    expr: Expression
+
+class Assignment(Node):
+    type: Operator
+    lval: List[Expression]
+    rval: List[Expression]
+
+SimpleStatement = Union[
+    Send,
+    Empty,
+    IncDec,
+    InitSpec,
+    Assignment,
+    Expression,
+]
+
+### Statements -- Generic Statements ###
+
+class CompoundStatement(Node):
+    body: List['Statement']
+
+Statement = Union[
+    Go,
+    If,
+    For,
+    Goto,
+    Break,
+    Defer,
+    Label,
+    Switch,
+    Select,
+    Return,
+    ForRange,
+    InitSpec,
+    TypeSpec,
+    Continue,
+    Fallthrough,
+    SimpleStatement,
+    CompoundStatement,
+]
