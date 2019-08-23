@@ -7,6 +7,7 @@ from typing import Union
 from typing import TypeVar
 from typing import Callable
 from typing import Optional
+from typing import Generator
 
 from .ast import InitSpec
 from .ast import TypeSpec
@@ -377,6 +378,16 @@ class Parser:
                 return False
             else:
                 return True
+
+    def _is_case_end(self) -> bool:
+        if self._should(self._peek(), TokenType.Operator, '}'):
+            return True
+        elif self._should(self._peek(), TokenType.Keyword, 'case'):
+            return True
+        elif self._should(self._peek(), TokenType.Keyword, 'default'):
+            return True
+        else:
+            return False
 
     def _is_named_type(self) -> bool:
         with self._Scope(self):
@@ -1025,7 +1036,66 @@ class Parser:
             return ret
 
     def _parse_select(self) -> Select:
-        pass    # TODO: select
+        ret = Select(self._next())
+        self._require(self._next(), TokenType.Operator, '{')
+
+        # parse all cases
+        while not self._should(self._peek(), TokenType.Operator, '}'):
+            ret.cases.append(self._parse_select_case())
+
+        # skip the '}'
+        self._next()
+        return ret
+
+    def _parse_select_case(self) -> SelectCase:
+        tk = self._next()
+        ret = SelectCase(tk)
+
+        # check for 'default' case
+        if self._should(tk, TokenType.Keyword, 'case'):
+            ret.expr = self._parse_select_case_cond()
+        else:
+            self._require(tk, TokenType.Keyword, 'default')
+
+        # parse the case body
+        self._require(self._next(), TokenType.Operator, ':')
+        self._parse_case_body(ret.body)
+        return ret
+
+    def _parse_select_case_cond(self) -> Union[Send, SelectReceive]:
+        st = self.save_state()
+        expr = self._parse_expression()
+
+        # check for send expression
+        if self._should(self._peek(), TokenType.Operator, '<-'):
+            return self._parse_send(self._next(), expr)
+
+        # rewind back
+        self.load_state(st)
+        ret = SelectReceive(self._peek())
+
+        # try parse as SVD
+        try:
+            ret.svd = True
+            ret.terms = self._parse_svd()
+        except SyntaxError:
+            self.load_state(st)
+            self._parse_select_case_assign(ret)
+
+        # parse the receive expression
+        ret.value = self._parse_expression()
+        return ret
+
+    def _parse_select_case_assign(self, ret: SelectReceive):
+        ret.svd = False
+        ret.terms = self._parse_expressions()
+        self._require(self._next(), TokenType.Operator, '=')
+        return ret
+
+    def _parse_case_body(self, body: List[Statement]):
+        while not self._is_case_end():
+            body.append(self._parse_statement())
+            self._delimiter(';')
 
     def _parse_switch(self) -> Switch:
         pass    # TODO: switch
@@ -1492,7 +1562,7 @@ class Parser:
 
     def _parse_function_body(self) -> Optional[CompoundStatement]:
         with self._Nested(self):
-            if self._should(self._peek(), TokenType.Operator, ';'):
+            if not self._should(self._peek(), TokenType.Operator, '{'):
                 return None
             else:
                 return self._parse_compound_statement()

@@ -330,7 +330,7 @@ class SelectCase(Node):
 
 class SelectReceive(Node):
     svd   : bool
-    vals  : Expression
+    value : Expression
     terms : List[Union[Name, Expression]]
 
 class Switch(Node):
