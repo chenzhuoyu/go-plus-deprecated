@@ -7,7 +7,6 @@ from typing import Union
 from typing import TypeVar
 from typing import Callable
 from typing import Optional
-from typing import Generator
 
 from .ast import InitSpec
 from .ast import TypeSpec
