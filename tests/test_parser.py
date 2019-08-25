@@ -259,7 +259,30 @@ func foo() {
     case x < z: f2()
     case x == 4: f3()
     }
+    
+# blanks are permitted in filenames, here the filename is " a:100 " (excluding quotes)
+//line  a:100 :10
+
+# colons are permitted in filenames, here the filename is C:foo.go, and the line is 10      
+//line C:foo.go:10
+
+# the filename is foo.go, and the line number is 10 for the next line
+//line foo.go:10
+
+# the position of x is in the current file with line number 10 and column number 20 
+_ = /*line :10:20*/x
+
+# this comment is recognized as invalid line directive (extra blanks around line number)
+/*line foo: 10 */
+
 }
+
+//go:nosplit
+//go:noescape
+func foobar()
+
+//go:linkname baz importpath.name
+func baz() {}
 """
 
 class TestParser(unittest.TestCase):

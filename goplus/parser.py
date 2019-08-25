@@ -8,6 +8,7 @@ from typing import Union
 from typing import Callable
 from typing import Optional
 
+from .ast import LinkSpec
 from .ast import InitSpec
 from .ast import TypeSpec
 from .ast import Function
@@ -88,6 +89,7 @@ from .ast import ChannelDirection
 from .ast import StructField
 from .ast import InterfaceMethod
 
+from .ast import FunctionFlags
 from .ast import FunctionArgument
 from .ast import FunctionSignature
 
@@ -97,6 +99,10 @@ from .tokenizer import Tokenizer
 
 from .tokenizer import TokenType
 from .tokenizer import TokenValue
+
+from .tokenizer import NoSplitDirective
+from .tokenizer import NoEscapeDirective
+from .tokenizer import LinkNameDirective
 
 LIT_NODES = {
     TokenType.Int     : Int,
@@ -208,11 +214,12 @@ PState = Tuple[
 ]
 
 class Parser:
-    lx   : Tokenizer
-    expr : int
-    iota : int
-    last : Optional[Token]
-    prev : Optional[Token]
+    lx     : Tokenizer
+    expr   : int
+    iota   : int
+    last   : Optional[Token]
+    prev   : Optional[Token]
+    fflags : FunctionFlags
 
     class _Scope:
         ps: 'Parser'
@@ -268,6 +275,7 @@ class Parser:
         self.iota = 0
         self.last = None
         self.prev = None
+        self.fflags = FunctionFlags(0)
 
     ### Tokenizer Interfaces ###
 
@@ -1672,19 +1680,31 @@ class Parser:
     ### Top Level Parsers --- Functions & Methods ###
 
     def _parse_function(self, ret: List[Function]):
+        func = self._parse_function_def()
+        func.opts, self.fflags = self.fflags, FunctionFlags(0)
+
+        # 'go:noescape' must not have a function body
+        if (func.opts & FunctionFlags.NO_ESCAPE) and \
+           self._should(self._peek(), TokenType.Operator, '{'):
+            raise self._error(self._peek(), 'can only use //go:noescape with external func implementations')
+
+        # otherwise, the body is optional
+        func.body = self._parse_function_body()
+        ret.append(func)
+
+    def _parse_function_def(self) -> Function:
         tk = self._peek()
-        func = Function(tk)
+        ret = Function(tk)
 
         # check for function receiver
         if self._should(tk, TokenType.Operator, '('):
             _, args = self._parse_parameters(for_args = False)
-            func.receiver = self._ensure_receiver_args(args)
+            ret.recv = self._ensure_receiver_args(args)
 
         # function name and signature type
-        func.name = self._parse_name()
-        func.type = self._parse_signature()
-        func.body = self._parse_function_body()
-        ret.append(func)
+        ret.name = self._parse_name()
+        ret.type = self._parse_signature()
+        return ret
 
     def _parse_function_body(self) -> Optional[CompoundStatement]:
         with self._Nested(self):
@@ -1759,11 +1779,13 @@ class Parser:
 
     ### Groupped Parsers ###
 
-    def _iota_reset(self):
+    def _group_reset(self):
         self.iota = 0
+        self.fflags = FunctionFlags(0)
 
-    def _iota_increment(self):
+    def _group_increment(self):
         self.iota += 1
+        self.fflags = FunctionFlags(0)
 
     def _parse_declarations(
         self,
@@ -1771,11 +1793,11 @@ class Parser:
         parser : Callable[[Token, List[Union[InitSpec, TypeSpec, ImportSpec]]], None],
     ):
         if not self._should(self._peek(), TokenType.Operator, '('):
-            self._iota_reset()
+            self._group_reset()
             parser(self._next(), ret)
         else:
             self._next()
-            self._iota_reset()
+            self._group_reset()
             self._parse_declaration_group(ret, parser)
             self._require(self._next(), TokenType.Operator, ')')
 
@@ -1786,10 +1808,23 @@ class Parser:
     ):
         while not self._should(self._peek(), TokenType.Operator, ')'):
             parser(self._next(), ret)
-            self._iota_increment()
+            self._group_increment()
             self._delimiter(';')
 
     ### Generic Parsers ###
+
+    def _parse_dir(self, tk: Token, ret: Package):
+        if isinstance(tk.value, NoSplitDirective):
+            self.fflags |= FunctionFlags.NO_SPLIT
+        elif isinstance(tk.value, NoEscapeDirective):
+            self.fflags |= FunctionFlags.NO_ESCAPE
+        elif isinstance(tk.value, LinkNameDirective):
+            ls = LinkSpec(tk)
+            ls.name = tk.value.name
+            ls.link = tk.value.link
+            ret.links.append(ls)
+        else:
+            raise SystemError('invalid compiler directive')
 
     def _parse_val(self, tk: Token, ret: List[InitSpec]):
         self._parse_var_spec(tk, ret, consts= True)
@@ -1828,9 +1863,14 @@ class Parser:
             self._delimiter(';')
 
         # parse other top-level declarations
-        while self._should(self._peek(), TokenType.Keyword):
-            self._parse_decl(self._next(), ret)
-            self._delimiter(';')
+        while True:
+            if self._should(self._peek(), TokenType.Directive):
+                self._parse_dir(self._next(), ret)
+            elif self._should(self._peek(), TokenType.Keyword):
+                self._parse_decl(self._next(), ret)
+                self._delimiter(';')
+            else:
+                break
 
         # must be EOF
         if self._should(self._peek(), TokenType.End):

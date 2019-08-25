@@ -267,6 +267,10 @@ Modifier = Union[
 
 ### Top Level Declarations ###
 
+class LinkSpec(Node):
+    name: str
+    link: str
+
 class InitSpec(Node):
     type   : Optional[Type]
     names  : List[Name]
@@ -278,11 +282,16 @@ class TypeSpec(Node):
     type  : 'Type'
     alias : bool
 
+class FunctionFlags(IntFlag):
+    NO_SPLIT  = 0x01
+    NO_ESCAPE = 0x02
+
 class Function(Node):
-    name      : Name
-    type      : FunctionSignature
-    body      : Optional['CompoundStatement']
-    receiver  : Optional[FunctionArgument]
+    name: Name
+    opts: FunctionFlags
+    type: FunctionSignature
+    recv: Optional[FunctionArgument]
+    body: Optional['CompoundStatement']
 
 class ImportHere(Node):
     def __init__(self, tk: Token):
@@ -296,6 +305,7 @@ class ImportSpec(Node):
 class Package(Node):
     name    : Name
     vars    : List[InitSpec]
+    links   : List[LinkSpec]
     funcs   : List[Function]
     types   : List[TypeSpec]
     consts  : List[InitSpec]

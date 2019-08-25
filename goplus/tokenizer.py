@@ -2,6 +2,7 @@
 
 import re
 
+from typing import List
 from typing import Union
 from typing import Optional
 
@@ -88,17 +89,43 @@ class Token:
     def operator(cls, tk: 'Tokenizer', value: str):
         return cls(tk.save, tk.file, TokenType.Operator, value)
 
+    @classmethod
+    def directive(cls, tk: 'Tokenizer', value: 'Directive'):
+        return cls(tk.save, tk.file, TokenType.Directive, value)
+
+class NoSplitDirective:
+    def __repr__(self):
+        return '#{go:nosplit}'
+
+class NoEscapeDirective:
+    def __repr__(self):
+        return '#{go:noescape}'
+
+class LinkNameDirective:
+    name: str
+    link: str
+
+    def __repr__(self):
+        return '#{go:linkname %s %s}' % (self.name, self.link)
+
+Directive = Union[
+    NoSplitDirective,
+    NoEscapeDirective,
+    LinkNameDirective,
+]
+
 class TokenType(IntEnum):
-    LF       = 0
-    End      = 1
-    Int      = 2
-    Name     = 3
-    Rune     = 4
-    Float    = 5
-    String   = 6
-    Complex  = 7
-    Keyword  = 8
-    Operator = 9
+    LF        = 0
+    End       = 1
+    Int       = 2
+    Name      = 3
+    Rune      = 4
+    Float     = 5
+    String    = 6
+    Complex   = 7
+    Keyword   = 8
+    Operator  = 9
+    Directive = 255
 
 TokenValue = Optional[Union[
     int,
@@ -106,6 +133,7 @@ TokenValue = Optional[Union[
     bytes,
     float,
     complex,
+    Directive,
 ]]
 
 KEYWORDS = {
@@ -202,6 +230,12 @@ STD_ESCAPE = {
 IDENT_REMS  = re.compile(r'\w', re.U)
 IDENT_FIRST = re.compile(r'[^\W\d]', re.U)
 
+class _GotDirective(BaseException):
+    val: Directive
+
+    def __init__(self, val: Directive):
+        self.val = val
+
 class Tokenizer:
     src   : str
     file  : str
@@ -245,9 +279,17 @@ class Tokenizer:
         st.pos += 1
         return ch
 
-    def _skip_eol(self):
-        while self._peek_char() not in ('', '\n'):
-            self._next_char()
+    def _skip_eol(self) -> str:
+        ret = ''
+        nch = self._peek_char()
+
+        # read the whole line
+        while nch not in ('', '\n'):
+            ret += self._next_char()
+            nch = self._peek_char()
+
+        # all done
+        return ret
 
     def _skip_char(self) -> str:
         self.save.col = self.state.col
@@ -277,23 +319,33 @@ class Tokenizer:
 
             # line comments
             if self._next_char() == '/':
-                self._skip_eol()
+                self._check_directives()
                 continue
 
             # skip the '*' char
+            cc = ''
             nl = False
             end = False
             nch = self._next_char()
 
             # block comments
-            while not end or nch != '/':
-                nl = nl or nch == '\n'
-                end = not end and nch == '*'
+            while nch and (not end or nch != '/'):
+                cc += nch
+                nl |= nch == '\n'
+                end = nch == '*'
                 nch = self._next_char()
+
+            # check for EOF
+            if not nch:
+                raise self._error('EOF when scanning block comments')
 
             # comment containing new lines acts like a newline
             if nl and not nonl:
                 return '\n'
+
+            # special case for 'line' directive
+            if not nl and cc.startswith('line '):
+                self._handle_directives(cc[:-1], block = True)
 
     def _read_rune(self, ch: str) -> bytes:
         if ch != '\\':
@@ -351,6 +403,63 @@ class Tokenizer:
             raise self._error('surrogate half')
         else:
             raise self._error('invalid Unicode code point')
+
+    def _check_sol(self) -> bool:
+        if self.state.pos == 0:
+            return True
+        elif self.state.pos < 3:
+            return False
+        else:
+            return self.src[self.state.pos - 3] == '\n'
+
+    def _check_prefix(self, *pfx: str) -> bool:
+        for p in pfx:
+            if self.src[self.state.pos:self.state.pos + len(p)] == p:
+                return True
+        else:
+            return False
+
+    def _check_directives(self):
+        if not self._check_sol() or not self._check_prefix('go:', 'line '):
+            self._skip_eol()
+        else:
+            self._handle_directives(self._skip_eol(), block = False)
+
+    def _handle_directives(self, cdir: str, block: bool):
+        if cdir == 'go:nosplit':
+            raise _GotDirective(NoSplitDirective())
+        elif cdir == 'go:noescape':
+            raise _GotDirective(NoEscapeDirective())
+        elif cdir.startswith('line '):
+            self._handle_directives_line(cdir[5:].rsplit(':', 2), block)
+        elif cdir.startswith('go:linkname '):
+            self._handle_directives_linkname(cdir[12:].split(' '))
+
+    def _handle_directives_line(self, args: List[str], block: bool):
+        if args[-1].isdigit() and int(args[-1]) > 0:
+            if not block and self._next_char() != '\n':
+                raise SystemError('incorrect tokenizer state')
+
+            # adjust the row number
+            st = self.state
+            st.row = int(args[-1]) - 1
+
+            # check for column number
+            if len(args) <= 2 or not args[-2].isdigit() or int(args[-2]) <= 0:
+                name = ':'.join(args[:-1])
+            else:
+                name = ':'.join(args[:-2])
+                st.row, st.col = int(args[-2]) - 1, st.row
+
+            # check for file name
+            if name:
+                self.file = name
+
+    def _handle_directives_linkname(self, args: List[str]):
+        if len(args) == 2:
+            ret = LinkNameDirective()
+            ret.name, ret.link = map(str.strip, args)
+            raise _GotDirective(ret)
 
     def _parse(self, ch: str) -> Token:
         if not ch:
@@ -561,7 +670,10 @@ class Tokenizer:
         return self.state.pos >= len(self.src)
 
     def next(self, ignore_nl: bool = False) -> Token:
-        return self._parse(self._skip_blanks(ignore_nl))
+        try:
+            return self._parse(self._skip_blanks(ignore_nl))
+        except _GotDirective as e:
+            return Token.directive(self, e.val)
 
     def save_state(self) -> State:
         return self.state.copy()
