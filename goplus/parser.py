@@ -211,6 +211,7 @@ PState = Tuple[
     Token, 
     int,
     int,
+    FunctionFlags,
 ]
 
 class Parser:
@@ -341,10 +342,10 @@ class Parser:
     ### State Management ###
 
     def save_state(self) -> PState:
-        return self.lx.save_state(), self.last, self.prev, self.iota, self.expr
+        return self.lx.save_state(), self.last, self.prev, self.iota, self.expr, self.fflags
 
     def load_state(self, state: PState):
-        st, self.last, self.prev, self.iota, self.expr = state
+        st, self.last, self.prev, self.iota, self.expr, self.fflags = state
         self.lx.load_state(st)
 
     ### Helper Functions ###
