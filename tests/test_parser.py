@@ -3,7 +3,7 @@ import unittest
 from goplus.parser import Parser
 from goplus.tokenizer import Tokenizer
 
-_import_src = """
+_import_src = r"""
 package test
 
 import   "lib/math"         // math.Sin
@@ -18,7 +18,7 @@ import (
 )
 """
 
-_const_src = """
+_const_src = r"""
 package test
 
 type Foo struct {
@@ -159,6 +159,12 @@ var (
     f8 func(n int) func(p *T)
 )
 
+var mapLiteral = map[string]map[string]string {
+    "asd": {
+        "qwe": "zxc",
+    },
+}
+
 func IndexRune(s string, r rune) int {
     for i, c := range s {
         if c == r {
@@ -219,6 +225,40 @@ func foo() {
     }
     
     select {}  // block forever
+    
+    switch i := x.(type) {
+    case nil:
+        printString("x is nil")                // type of i is type of x (interface{})
+    case int:
+        printInt(i)                            // type of i is int
+    case float64:
+        printFloat64(i)                        // type of i is float64
+    case func(int) float64:
+        printFunction(i)                       // type of i is func(int) float64
+    case bool, string:
+        printString("type is bool or string")  // type of i is type of x (interface{})
+    default:
+        printString("don't know the type")     // type of i is type of x (interface{})
+    }
+    
+    switch i := foo(); i.(type) {}
+
+    switch tag {
+    default: s3()
+    case 0, 1, 2, 3: s1()
+    case 4, 5, 6, 7: s2()
+    }
+
+    switch x := f(); {  // missing switch expression means "true"
+    case x < 0: return -x
+    default: return x
+    }
+
+    switch {
+    case x < y: f1()
+    case x < z: f2()
+    case x == 4: f3()
+    }
 }
 """
 

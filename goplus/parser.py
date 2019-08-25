@@ -2,9 +2,9 @@
 
 from typing import Set
 from typing import List
+from typing import Type as Tp
 from typing import Tuple
 from typing import Union
-from typing import TypeVar
 from typing import Callable
 from typing import Optional
 
@@ -33,11 +33,19 @@ from .ast import Goto
 from .ast import Break
 from .ast import Defer
 from .ast import Label
-from .ast import Switch
-from .ast import Select
 from .ast import Return
 from .ast import ForRange
 from .ast import Continue
+
+from .ast import Switch
+from .ast import SwitchCase
+
+from .ast import TypeSwitch
+from .ast import TypeSwitchCase
+
+from .ast import Select
+from .ast import SelectCase
+from .ast import SelectReceive
 
 from .ast import Send
 from .ast import Empty
@@ -46,9 +54,6 @@ from .ast import Statement
 from .ast import Assignment
 from .ast import Fallthrough
 
-from .ast import SwitchCase
-from .ast import SelectCase
-from .ast import SelectReceive
 from .ast import SimpleStatement
 from .ast import CompoundStatement
 
@@ -388,6 +393,19 @@ class Parser:
         else:
             return False
 
+    def _is_type_expr(self) -> bool:
+        with self._Scope(self):
+            if not self._should(self._next(), TokenType.Operator, '.'):
+                return False
+            elif not self._should(self._next(), TokenType.Operator, '('):
+                return False
+            elif not self._should(self._next(), TokenType.Keyword, 'type'):
+                return False
+            elif not self._should(self._next(), TokenType.Operator, ')'):
+                return False
+            else:
+                return True
+
     def _is_named_type(self) -> bool:
         with self._Scope(self):
             try:
@@ -460,6 +478,12 @@ class Parser:
         if isinstance(self._parse_type(), NamedType):
             raise SyntaxError('named types')
 
+    def _ensure_type_switch(self):
+        self._require(self._next(), TokenType.Operator, '.')
+        self._require(self._next(), TokenType.Operator, '(')
+        self._require(self._next(), TokenType.Keyword, 'type')
+        self._require(self._next(), TokenType.Operator, ')')
+
     def _ensure_receiver_args(self, args: List[FunctionArgument]) -> FunctionArgument:
         if len(args) != 1:
             raise self._error(self._peek(), 'method has multiple receivers')
@@ -518,7 +542,7 @@ class Parser:
             if isinstance(arg, Expression):
                 mod.args[i] = self._prune_expression_tree(arg)
 
-    ### Basic Name Parser ###
+    ### Basic Structure Parsers ###
 
     def _parse_svd(self) -> List[Name]:
         val = self._parse_name()
@@ -535,6 +559,67 @@ class Parser:
 
     def _parse_name(self) -> Name:
         return Name(self._require(self._next(), TokenType.Name))
+
+    def _parse_case(
+        self,
+        name   : str,
+        klass  : Tp[Union[SelectCase, SwitchCase, TypeSwitchCase]],
+        cases  : List[Union[SelectCase, SwitchCase, TypeSwitchCase]],
+        parser : Callable[[Union[SelectCase, SwitchCase, TypeSwitchCase]], None],
+    ):
+        default = False
+        self._require(self._next(), TokenType.Operator, '{')
+
+        # parse every case
+        while not self._should(self._peek(), TokenType.Operator, '}'):
+            default = self._parse_case_item(name, klass, cases, parser, default)
+        else:
+            self._next()
+
+    def _parse_case_body(self, body: List[Statement]):
+        while not self._is_case_end():
+            body.append(self._parse_statement())
+            self._delimiter(';')
+
+    def _parse_case_item(
+        self,
+        name    : str,
+        klass   : Tp[Union[SelectCase, SwitchCase, TypeSwitchCase]],
+        cases   : List[Union[SelectCase, SwitchCase, TypeSwitchCase]],
+        parser  : Callable[[Union[SelectCase, SwitchCase, TypeSwitchCase]], None],
+        default : bool,
+    ) -> bool:
+        tk = self._next()
+        ok = self._should(tk, TokenType.Keyword, 'case')
+        ret = klass(tk)
+
+        # check for 'default' case
+        if ok:
+            parser(ret)
+        elif not self._should(tk, TokenType.Keyword, 'default'):
+            raise self._error(tk, '\'case\' or \'default\' expected')
+        elif default:
+            raise self._error(tk, 'multiple defaults in %s' % name)
+
+        # parse the case body
+        self._require(self._next(), TokenType.Operator, ':')
+        self._parse_case_body(ret.body)
+
+        # add to cases
+        cases.append(ret)
+        return not ok
+
+    def _parse_types(self) -> List[Type]:
+        val = self._parse_type()
+        ret = [val]
+
+        # may have multiple names
+        while self._should(self._peek(), TokenType.Operator, ','):
+            self._next()
+            ret.append(self._parse_type())
+
+        # all done
+        return ret
 
     def _parse_operator(self, ops: Set[str]) -> Operator:
         if not self._is_ops(ops):
@@ -556,7 +641,7 @@ class Parser:
 
     def _parse_initializer(self) -> Optional[SimpleStatement]:
         st = self.save_state()
-        ret = self._parse_initializer_st(st)
+        ret = self._parse_initializer_st()
 
         # check for the ';' operator
         if ret and self._should(self._next(), TokenType.Operator, ';'):
@@ -566,12 +651,12 @@ class Parser:
         self.load_state(st)
         return None
 
-    def _parse_initializer_st(self, st: PState) -> Optional[SimpleStatement]:
-        try:
-            return self._parse_simple_statement()
-        except SyntaxError:
-            self.load_state(st)
-            return None
+    def _parse_initializer_st(self) -> Optional[SimpleStatement]:
+        with self._Control(self):
+            try:
+                return self._parse_simple_statement()
+            except SyntaxError:
+                return None
 
     ### Nested Parsers ###
 
@@ -630,6 +715,7 @@ class Parser:
 
     def _parse_map_type(self) -> MapType:
         ret = MapType(self._next())
+        self._require(self._next(), TokenType.Operator, '[')
         ret.key = self._parse_type()
         self._require(self._next(), TokenType.Operator, ']')
         ret.elem = self._parse_type()
@@ -923,7 +1009,7 @@ class Parser:
     def _parse_if(self) -> If:
         ret = If(self._next())
         ret.init = self._parse_initializer()
-        ret.cond = self._parse_control_expression()
+        ret.cond = self._parse_if_cond()
         ret.body = self._parse_compound_statement()
 
         # no 'else' branch
@@ -932,10 +1018,14 @@ class Parser:
 
         # parse the 'else' branch
         self._next()
-        ret.branch = self._parse_else()
+        ret.branch = self._parse_if_branch()
         return ret
 
-    def _parse_else(self) -> Optional[Union[If, CompoundStatement]]:
+    def _parse_if_cond(self) -> Expression:
+        with self._Control(self):
+            return self._parse_expression()
+
+    def _parse_if_branch(self) -> Optional[Union[If, CompoundStatement]]:
         if self._should(self._peek(), TokenType.Keyword, 'if'):
             return self._parse_if()
         else:
@@ -970,16 +1060,18 @@ class Parser:
 
         # try 'for <cond> {}'
         try:
-            ret.cond = self._parse_control_expression()
-            self._require(self._peek(), TokenType.Operator, '{')
+            with self._Control(self):
+                ret.cond = self._parse_expression()
+                self._require(self._peek(), TokenType.Operator, '{')
         except SyntaxError:
             self.load_state(state)
         else:
             return ret
 
-        # parse the initial statement if any
+        # full 3-clauses 'for' loop, parse the initial statement if any
         if not self._should(self._peek(), TokenType.Operator, ';'):
-            ret.init = self._parse_simple_statement()
+            with self._Control(self):
+                ret.init = self._parse_simple_statement()
 
         # the first ';'
         tk = self._next()
@@ -987,7 +1079,8 @@ class Parser:
 
         # parse the conditional expression if any
         if not self._should(self._peek(), TokenType.Operator, ';'):
-            ret.cond = self._parse_expression()
+            with self._Control(self):
+                ret.cond = self._parse_expression()
 
         # the second ';'
         tk = self._next()
@@ -995,7 +1088,8 @@ class Parser:
 
         # parse the post statement if any
         if not self._should(self._peek(), TokenType.Operator, '{'):
-            ret.post = self._parse_control_statement()
+            with self._Control(self):
+                ret.post = self._parse_simple_statement()
 
         # all done
         return ret
@@ -1008,7 +1102,7 @@ class Parser:
         if ret.svd:
             ret.terms = self._parse_svd()
         else:
-            ret.terms = self._parse_for_range_eq(self._parse_expressions())
+            ret.terms = self._parse_for_range_vars()
 
         # must have 1 or 2 terms before the "range" operator
         if 1 <= len(ret.terms) <= 2:
@@ -1017,12 +1111,17 @@ class Parser:
             raise self._error(self._peek(), 'invalid number of range variables')
 
         # parse the range expression
-        ret.expr = self._parse_control_expression()
-        return ret
+        with self._Control(self):
+            ret.expr = self._parse_expression()
+            return ret
 
     def _parse_for_range_eq(self, ret: List[Expression]) -> List[Expression]:
         self._require(self._next(), TokenType.Operator, '=')
         return ret
+
+    def _parse_for_range_vars(self):
+        with self._Control(self):
+            return self._parse_for_range_eq(self._parse_expressions())
 
     def _parse_defer(self) -> Defer:
         ret = Defer(self._next())
@@ -1036,38 +1135,17 @@ class Parser:
 
     def _parse_select(self) -> Select:
         ret = Select(self._next())
-        self._require(self._next(), TokenType.Operator, '{')
-
-        # parse all cases
-        while not self._should(self._peek(), TokenType.Operator, '}'):
-            ret.cases.append(self._parse_select_case())
-
-        # skip the '}'
-        self._next()
+        self._parse_case('select', SelectCase, ret.cases, self._parse_select_case)
         return ret
 
-    def _parse_select_case(self) -> SelectCase:
-        tk = self._next()
-        ret = SelectCase(tk)
-
-        # check for 'default' case
-        if self._should(tk, TokenType.Keyword, 'case'):
-            ret.expr = self._parse_select_case_cond()
-        else:
-            self._require(tk, TokenType.Keyword, 'default')
-
-        # parse the case body
-        self._require(self._next(), TokenType.Operator, ':')
-        self._parse_case_body(ret.body)
-        return ret
-
-    def _parse_select_case_cond(self) -> Union[Send, SelectReceive]:
+    def _parse_select_case(self, case: SelectCase):
         st = self.save_state()
         expr = self._parse_expression()
 
         # check for send expression
         if self._should(self._peek(), TokenType.Operator, '<-'):
-            return self._parse_send(self._next(), expr)
+            case.expr = self._parse_send(self._next(), expr)
+            return
 
         # rewind back
         self.load_state(st)
@@ -1083,7 +1161,7 @@ class Parser:
 
         # parse the receive expression
         ret.value = self._parse_expression()
-        return ret
+        case.expr = ret
 
     def _parse_select_case_assign(self, ret: SelectReceive):
         ret.svd = False
@@ -1091,13 +1169,74 @@ class Parser:
         self._require(self._next(), TokenType.Operator, '=')
         return ret
 
-    def _parse_case_body(self, body: List[Statement]):
-        while not self._is_case_end():
-            body.append(self._parse_statement())
-            self._delimiter(';')
+    def _parse_switch(self) -> Union[Switch, TypeSwitch]:
+        tk = self._next()
+        init = self._parse_initializer()
+        state = self.save_state()
 
-    def _parse_switch(self) -> Switch:
-        pass    # TODO: switch
+        # set the case class and parser for expression switch,
+        # so we don't have to set them in the except clause
+        klass = SwitchCase
+        parser = self._parse_expr_switch_case
+
+        # first let's assume it is a type switch
+        ret = TypeSwitch(tk)
+        ret.name = self._parse_type_switch_init()
+
+        # then try parsing it
+        try:
+            self._parse_type_switch_cond(ret)
+            self._ensure_type_switch()
+
+        # syntax error, it's just a simple expression switch, rollback
+        except SyntaxError:
+            ret = None
+            self.load_state(state)
+
+        # no errors, it is a type switch, commit the parsing state (by doing
+        # nothing) and change the case class and parser to the correct values
+        else:
+            klass = TypeSwitchCase
+            parser = self._parse_type_switch_case
+
+        # parse the expression outside of the catch caluse to prevent exception
+        # chaining when syntax errors occurres in the switch expression
+        if ret is None:
+            ret = Switch(tk)
+            ret.expr = self._parse_expr_switch_cond()
+
+        # parse the cases
+        ret.init = init
+        self._parse_case('switch', klass, ret.cases, parser)
+        return ret
+
+    def _parse_expr_switch_cond(self) -> Optional[Expression]:
+        if not self._should(self._peek(), TokenType.Operator, '{'):
+            with self._Control(self):
+                return self._parse_expression()
+
+    def _parse_expr_switch_case(self, case: SwitchCase):
+        case.vals = self._parse_expressions()
+
+    def _parse_type_switch_init(self) -> Optional[Name]:
+        st = self.save_state()
+        tk = self._next()
+
+        # should be in a form of '<name> :='
+        if self._should(tk, TokenType.Name):
+            if self._should(self._next(), TokenType.Operator, ':='):
+                return Name(tk)
+
+        # no init clause present
+        self.load_state(st)
+        return None
+
+    def _parse_type_switch_cond(self, ret: TypeSwitch):
+        with self._Control(self):
+            ret.type = self._parse_primary()
+
+    def _parse_type_switch_case(self, case: TypeSwitchCase):
+        case.types = self._parse_types()
 
     def _parse_labeled(self) -> Label:
         ret = Label(self._peek())
@@ -1235,10 +1374,6 @@ class Parser:
         self.load_state(st)
         return self._parse_assignment()
 
-    def _parse_control_statement(self) -> SimpleStatement:
-        with self._Control(self):
-            return self._parse_simple_statement()
-
     def _parse_compound_statement(self) -> CompoundStatement:
         tk = self._next()
         ret = CompoundStatement(self._require(tk, TokenType.Operator, '{'))
@@ -1312,7 +1447,7 @@ class Parser:
         # special case: name followed by a block should be parsed as a single
         # name rather than a struct initialization when in control statements
         elif self._is_literal_type() and (self.expr >= 0 or not self._is_named_type()):
-            return self._parse_composite(with_type = True)
+            return self._parse_composite()
 
         # a type specifier followed by a '(', it's a type conversion
         elif self._is_conversion_type():
@@ -1328,13 +1463,9 @@ class Parser:
         elif self._should(tk, TokenType.Operator, '('):
             return self._parse_nested_expr()
 
-        # composite literals without literal type
-        elif self._should(tk, TokenType.Operator, '{'):
-            return self._parse_composite(with_type = False)
-
         # otherwise it's a syntax error
         else:
-            raise self._error(tk, 'operands expected, got %s' % repr(tk))
+            raise self._error(tk, 'operands expected, got %s' % repr(tk.value))
 
     def _parse_primary_mods(self, ret: Primary) -> Primary:
         tk = self._peek()
@@ -1344,7 +1475,7 @@ class Parser:
         while tt == TokenType.Operator:
             if tv == '[':
                 ret.mods.append(self._parse_slice())
-            elif tv == '.':
+            elif tv == '.' and not self._is_type_expr():
                 ret.mods.append(self._parse_selector())
             elif tv == '(':
                 ret.mods.append(self._parse_arguments())
@@ -1367,9 +1498,9 @@ class Parser:
             ret.body = self._parse_compound_statement()
             return ret
 
-    def _parse_composite(self, with_type: bool) -> Composite:
+    def _parse_composite(self) -> Composite:
         ret = Composite(self._peek())
-        ret.type = self._parse_literal_type() if with_type else None
+        ret.type = self._parse_literal_type()
 
         # parse the composite value within nested scope
         with self._Nested(self):
@@ -1408,7 +1539,7 @@ class Parser:
         ret.key = ret.value
 
         # check for literal value
-        if not self._should(tk, TokenType.Operator, '{'):
+        if not self._should(self._peek(), TokenType.Operator, '{'):
             ret.value = self._parse_expression()
         else:
             ret.value = self._parse_composite_val()
@@ -1538,10 +1669,6 @@ class Parser:
     def _parse_expression(self) -> Expression:
         return self._prune_expression_tree(self._parse_expr(prec = 0))
 
-    def _parse_control_expression(self) -> Expression:
-        with self._Control(self):
-            return self._parse_expression()
-
     ### Top Level Parsers --- Functions & Methods ###
 
     def _parse_function(self, ret: List[Function]):
@@ -1568,7 +1695,7 @@ class Parser:
 
     ### Top Level Parsers --- Variables, Types, Constants & Imports ###
 
-    def _parse_var_spec(self, tk: Token, ret: List[InitSpec], readonly: bool):
+    def _parse_var_spec(self, tk: Token, ret: List[InitSpec], consts: bool):
         val = InitSpec(tk)
         val.names.append(Name(self._require(tk, TokenType.Name)))
 
@@ -1582,12 +1709,12 @@ class Parser:
             val.type = self._parse_type()
 
         # the '=' operator, required under read-only mode for the first item
-        if (readonly and self.iota == 0) or self._should(self._peek(), TokenType.Operator, '='):
+        if (consts and self.iota == 0) or self._should(self._peek(), TokenType.Operator, '='):
             self._require(self._next(), TokenType.Operator, '=')
             val.values = self._parse_expressions()
 
         # bare identifiers for remaining consts, just copy the previous expressions
-        elif readonly and self.iota > 0:
+        elif consts and self.iota > 0:
             assert ret
             val.values = ret[-1].values[:]
 
@@ -1596,7 +1723,7 @@ class Parser:
             raise self._error(self._peek(), '\'=\' or type specifier expected')
 
         # add to variable / const list
-        val.readonly = readonly
+        val.consts = consts
         ret.append(val)
 
     def _parse_type_spec(self, tk: Token, ret: List[TypeSpec]):
@@ -1606,7 +1733,7 @@ class Parser:
         # check for type aliasing
         if self._should(self._peek(), TokenType.Operator, '='):
             self._next()
-            ts.is_alias = True
+            ts.alias = True
 
         # parse the actual type
         ts.type = self._parse_type()
@@ -1632,37 +1759,43 @@ class Parser:
 
     ### Groupped Parsers ###
 
-    Result = TypeVar('Result')
-
     def _iota_reset(self):
         self.iota = 0
 
     def _iota_increment(self):
         self.iota += 1
 
-    def _parse_declarations(self, ret: Result, parser_func: Callable[[Token, Result], None]):
+    def _parse_declarations(
+        self,
+        ret    : List[Union[InitSpec, TypeSpec, ImportSpec]],
+        parser : Callable[[Token, List[Union[InitSpec, TypeSpec, ImportSpec]]], None],
+    ):
         if not self._should(self._peek(), TokenType.Operator, '('):
             self._iota_reset()
-            parser_func(self._next(), ret)
+            parser(self._next(), ret)
         else:
             self._next()
             self._iota_reset()
-            self._parse_declaration_group(ret, parser_func)
+            self._parse_declaration_group(ret, parser)
             self._require(self._next(), TokenType.Operator, ')')
 
-    def _parse_declaration_group(self, ret: Result, parser_func: Callable[[Token, Result], None]):
+    def _parse_declaration_group(
+        self,
+        ret    : List[Union[InitSpec, TypeSpec, ImportSpec]],
+        parser : Callable[[Token, List[Union[InitSpec, TypeSpec, ImportSpec]]], None],
+    ):
         while not self._should(self._peek(), TokenType.Operator, ')'):
-            parser_func(self._next(), ret)
+            parser(self._next(), ret)
             self._iota_increment()
             self._delimiter(';')
 
     ### Generic Parsers ###
 
     def _parse_val(self, tk: Token, ret: List[InitSpec]):
-        self._parse_var_spec(tk, ret, readonly = True)
+        self._parse_var_spec(tk, ret, consts= True)
 
     def _parse_var(self, tk: Token, ret: List[InitSpec]):
-        self._parse_var_spec(tk, ret, readonly = False)
+        self._parse_var_spec(tk, ret, consts= False)
 
     def _parse_decl(self, tk: Token, ret: Package):
         if tk.value == 'func':

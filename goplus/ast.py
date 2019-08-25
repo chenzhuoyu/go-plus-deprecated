@@ -255,7 +255,7 @@ class Arguments(Node):
     args : List[Union[Type, Expression]]
 
 class Assertion(Node):
-    type: Type
+    type: Optional[Type]
 
 Modifier = Union[
     Index,
@@ -268,15 +268,15 @@ Modifier = Union[
 ### Top Level Declarations ###
 
 class InitSpec(Node):
-    type     : Optional[Type]
-    names    : List[Name]
-    values   : List[Expression]
-    readonly : bool
+    type   : Optional[Type]
+    names  : List[Name]
+    values : List[Expression]
+    consts : bool
 
 class TypeSpec(Node):
-    name     : Name
-    type     : 'Type'
-    is_alias : bool
+    name  : Name
+    type  : 'Type'
+    alias : bool
 
 class Function(Node):
     name      : Name
@@ -318,6 +318,12 @@ class For(Node):
     post: Optional['SimpleStatement']
     body: 'CompoundStatement'
 
+class ForRange(Node):
+    svd   : bool
+    expr  : Expression
+    body  : 'CompoundStatement'
+    terms : List[Union[Name, Expression]]
+
 class Defer(Node):
     expr: Expression
 
@@ -342,11 +348,15 @@ class SwitchCase(Node):
     vals: List[Expression]
     body: List['Statement']
 
-class ForRange(Node):
-    svd   : bool
-    expr  : Expression
-    body  : 'CompoundStatement'
-    terms : List[Union[Name, Expression]]
+class TypeSwitch(Node):
+    name  : Optional[Name]
+    type  : Optional[Primary]
+    init  : Optional['SimpleStatement']
+    cases : List['TypeSwitchCase']
+
+class TypeSwitchCase(Node):
+    body  : List['Statement']
+    types : List[Type]
 
 ### Statements -- Control Flow Transfers ###
 
@@ -416,6 +426,7 @@ Statement = Union[
     InitSpec,
     TypeSpec,
     Continue,
+    TypeSwitch,
     Fallthrough,
     SimpleStatement,
     CompoundStatement,
