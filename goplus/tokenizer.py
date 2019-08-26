@@ -433,7 +433,7 @@ class Tokenizer:
         elif cdir.startswith('line '):
             self._handle_directives_line(cdir[5:].rsplit(':', 2), block)
         elif cdir.startswith('go:linkname '):
-            self._handle_directives_linkname(cdir[12:].split(' '))
+            self._handle_directives_linkname(list(filter(None, cdir[12:].split(' '))))
 
     def _handle_directives_line(self, args: List[str], block: bool):
         if args[-1].isdigit() and int(args[-1]) > 0:
@@ -458,7 +458,7 @@ class Tokenizer:
     def _handle_directives_linkname(self, args: List[str]):
         if len(args) == 2:
             ret = LinkNameDirective()
-            ret.name, ret.link = map(str.strip, args)
+            ret.name, ret.link = args
             raise _GotDirective(ret)
 
     def _parse(self, ch: str) -> Token:
