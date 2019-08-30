@@ -12,20 +12,21 @@ class StrictFields(type):
         return super().__new__(mcs, name, bases, _build_attrs(ns, bases, typing))
 
 # noinspection PyProtectedMember
-def _add_attrs(self: Any, felds: Dict[str, Any]):
-    for name, vtype in felds.items():
-        if vtype is bool:
-            setattr(self, name, False)
-        elif not hasattr(vtype, '_name'):
-            continue
-        elif vtype._name == 'Dict':
-            setattr(self, name, {})
-        elif vtype._name == 'List':
-            setattr(self, name, [])
-        elif vtype._name == 'Tuple':
-            setattr(self, name, ())
-        elif vtype.__origin__ is Union:
-            _add_union(self, name, vtype)
+def _add_attrs(self: Any, fields: Dict[str, Any]):
+    for name, vtype in fields.items():
+        try:
+            if vtype is bool:
+                setattr(self, name, False)
+            elif vtype._name == 'Dict':
+                setattr(self, name, {})
+            elif vtype._name == 'List':
+                setattr(self, name, [])
+            elif vtype._name == 'Tuple':
+                setattr(self, name, ())
+            elif vtype.__origin__ is Union:
+                _add_union(self, name, vtype)
+        except AttributeError:
+            pass
 
 def _add_union(self: Any, name: str, vtype: Any):
     if bool in vtype.__args__:

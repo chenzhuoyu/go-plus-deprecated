@@ -3,9 +3,6 @@
 import json
 import inspect
 
-from enum import IntFlag
-from .utils import StrictFields
-
 from typing import Any
 from typing import Set
 from typing import Dict
@@ -14,11 +11,17 @@ from typing import Union
 from typing import Optional
 from typing import Sequence
 
+from .types import Type as Tp
+from .utils import StrictFields
+from .flags import ChannelOptions
+from .flags import FunctionOptions
+
 from .tokenizer import Token
 from .tokenizer import TokenType
 from .tokenizer import TokenValue
 
 class Node(metaclass = StrictFields):
+    vt   : Optional[Tp]
     row  : int
     col  : int
     file : str
@@ -41,13 +44,19 @@ class Node(metaclass = StrictFields):
 
         # dump every exported attrs, except "row", "col" and "file"
         for attr in dir(self):
-            if attr != 'row' and \
-               attr != 'col' and \
-               attr != 'file' and \
-               not attr.endswith('_') and \
-               not attr.startswith('_') and \
-               not inspect.ismethod(getattr(self, attr)):
+            if attr == 'row' or \
+               attr == 'col' or \
+               attr == 'file' or \
+               attr.endswith('_') or \
+               attr.startswith('_') or \
+               inspect.ismethod(getattr(self, attr)):
+                continue
+            elif attr != 'tp':
                 ret[attr] = self._build_val(path, getattr(self, attr))
+            elif self.vt is not None:
+                ret[attr] = str(self.vt)
+            else:
+                ret[attr] = None
 
         # all done
         path.remove(id(self))
@@ -83,21 +92,26 @@ class Value(Node):
         assert tk.kind == self.kind
 
 class Int(Value):
+    vt   = Tp.UntypedInt
     kind = TokenType.Int
 
 class Name(Value):
     kind = TokenType.Name
 
 class Rune(Value):
+    vt   = Tp.UntypedRune
     kind = TokenType.Rune
 
 class Float(Value):
+    vt   = Tp.UntypedFloat
     kind = TokenType.Float
 
 class String(Value):
+    vt   = Tp.UntypedString
     kind = TokenType.String
 
 class Complex(Value):
+    vt   = Tp.UntypedComplex
     kind = TokenType.Complex
 
 class Operator(Value):
@@ -128,13 +142,8 @@ class StructField(Node):
     name: Optional[Name]
     tags: Optional[String]
 
-class ChannelDirection(IntFlag):
-    Send = 0x01
-    Recv = 0x02
-    Both = Send | Recv
-
 class ChannelType(Node):
-    dir  : ChannelDirection
+    dir  : ChannelOptions
     elem : 'Type'
 
 class PointerType(Node):
@@ -282,13 +291,9 @@ class TypeSpec(Node):
     type  : 'Type'
     alias : bool
 
-class FunctionFlags(IntFlag):
-    NO_SPLIT  = 0x01
-    NO_ESCAPE = 0x02
-
 class Function(Node):
     name: Name
-    opts: FunctionFlags
+    opts: FunctionOptions
     type: FunctionSignature
     recv: Optional[FunctionArgument]
     body: Optional['CompoundStatement']

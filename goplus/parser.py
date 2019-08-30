@@ -84,12 +84,12 @@ from .ast import FunctionType
 from .ast import InterfaceType
 
 from .ast import ImportHere
-from .ast import ChannelDirection
+from .ast import ChannelOptions
 
 from .ast import StructField
 from .ast import InterfaceMethod
 
-from .ast import FunctionFlags
+from .ast import FunctionOptions
 from .ast import FunctionArgument
 from .ast import FunctionSignature
 
@@ -206,12 +206,12 @@ def _is_end_token(tk: Token):
            (tk.kind == TokenType.Operator and tk.value in END_OPERATORS)
 
 PState = Tuple[
-    State, 
-    Token, 
-    Token, 
+    State,
+    Token,
+    Token,
     int,
     int,
-    FunctionFlags,
+    FunctionOptions,
 ]
 
 class Parser:
@@ -220,7 +220,7 @@ class Parser:
     iota   : int
     last   : Optional[Token]
     prev   : Optional[Token]
-    fflags : FunctionFlags
+    fflags : FunctionOptions
 
     class _Scope:
         ps: 'Parser'
@@ -276,7 +276,7 @@ class Parser:
         self.iota = 0
         self.last = None
         self.prev = None
-        self.fflags = FunctionFlags(0)
+        self.fflags = FunctionOptions(0)
 
     ### Tokenizer Interfaces ###
 
@@ -827,18 +827,18 @@ class Parser:
         return ret
 
     def _parse_channel_type(self, chan: bool) -> ChannelType:
-        tk = self._next()
-        ret = ChannelType(tk)
+        ret = ChannelType(self._next())
+        ret.dir = ChannelOptions.BOTH
 
         # <- chan <type>
         if not chan:
-            ret.dir = ChannelDirection.Recv
+            ret.dir = ChannelOptions.RECV
             self._require(self._next(), TokenType.Keyword, 'chan')
 
         # chan <- <type>
         elif self._should(self._peek(), TokenType.Operator, '<-'):
             self._next()
-            ret.dir = ChannelDirection.Send
+            ret.dir = ChannelOptions.SEND
 
         # chan <type>
         ret.elem = self._parse_type()
@@ -1682,10 +1682,10 @@ class Parser:
 
     def _parse_function(self, ret: List[Function]):
         func = self._parse_function_def()
-        func.opts, self.fflags = self.fflags, FunctionFlags(0)
+        func.opts, self.fflags = self.fflags, FunctionOptions(0)
 
         # 'go:noescape' must not have a function body
-        if (func.opts & FunctionFlags.NO_ESCAPE) and \
+        if (func.opts & FunctionOptions.NO_ESCAPE) and \
            self._should(self._peek(), TokenType.Operator, '{'):
             raise self._error(self._peek(), 'can only use //go:noescape with external func implementations')
 
@@ -1782,11 +1782,11 @@ class Parser:
 
     def _group_reset(self):
         self.iota = 0
-        self.fflags = FunctionFlags(0)
+        self.fflags = FunctionOptions(0)
 
     def _group_increment(self):
         self.iota += 1
-        self.fflags = FunctionFlags(0)
+        self.fflags = FunctionOptions(0)
 
     def _parse_declarations(
         self,
@@ -1816,9 +1816,9 @@ class Parser:
 
     def _parse_dir(self, tk: Token, ret: Package):
         if isinstance(tk.value, NoSplitDirective):
-            self.fflags |= FunctionFlags.NO_SPLIT
+            self.fflags |= FunctionOptions.NO_SPLIT
         elif isinstance(tk.value, NoEscapeDirective):
-            self.fflags |= FunctionFlags.NO_ESCAPE
+            self.fflags |= FunctionOptions.NO_ESCAPE
         elif isinstance(tk.value, LinkNameDirective):
             ls = LinkSpec(tk)
             ls.name = tk.value.name
