@@ -26,6 +26,14 @@ class Node(metaclass = StrictFields):
     col  : int
     file : str
 
+    # don't initialize these fields in the generated constructor
+    __noinit__ = {
+        'vt',
+        'row',
+        'col',
+        'file',
+    }
+
     def __init__(self, tk: Token):
         self.row = tk.row
         self.col = tk.col

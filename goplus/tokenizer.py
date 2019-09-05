@@ -283,6 +283,10 @@ class Tokenizer:
         self.save = State()
         self.state = State()
 
+        # force a new-line after source
+        if not self.src.endswith('\n'):
+            self.src += '\n'
+
     def _error(self, msg: str) -> SyntaxError:
         return SyntaxError('%s:%d:%d: %s' % (self.file, self.save.row + 1, self.save.col + 1, msg))
 
