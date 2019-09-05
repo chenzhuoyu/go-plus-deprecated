@@ -51,7 +51,7 @@ class Node(metaclass = StrictFields):
                attr.startswith('_') or \
                inspect.ismethod(getattr(self, attr)):
                 continue
-            elif attr != 'tp':
+            elif attr != 'vt':
                 ret[attr] = self._build_val(path, getattr(self, attr))
             elif self.vt is not None:
                 ret[attr] = str(self.vt)
@@ -298,6 +298,14 @@ class Function(Node):
     recv: Optional[FunctionArgument]
     body: Optional['CompoundStatement']
 
+class ImportC(Node):
+    src: str
+
+    def __init__(self, tk: Token):
+        self.src = tk.value
+        super().__init__(tk)
+        assert tk.kind == TokenType.Comments
+
 class ImportHere(Node):
     def __init__(self, tk: Token):
         super().__init__(tk)
@@ -305,7 +313,7 @@ class ImportHere(Node):
 
 class ImportSpec(Node):
     path  : String
-    alias : Optional[Union[Name, ImportHere]]
+    alias : Optional[Union[Name, ImportC, ImportHere]]
 
 class Package(Node):
     name    : Name
@@ -438,11 +446,11 @@ Statement = Union[
     Select,
     Return,
     ForRange,
-    InitSpec,
-    TypeSpec,
     Continue,
     TypeSwitch,
     Fallthrough,
+    List[InitSpec],
+    List[TypeSpec],
     SimpleStatement,
     CompoundStatement,
 ]

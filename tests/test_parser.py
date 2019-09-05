@@ -1,10 +1,12 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import unittest
 
 from goplus.parser import Parser
 from goplus.tokenizer import Tokenizer
 
-_import_src = r"""
-package test
+_import_src = r"""package test
 
 import   "lib/math"         // math.Sin
 import m "lib/math"         // m.Sin
@@ -12,14 +14,20 @@ import . "lib/math"         // Sin
 
 import (
     `context`
-    `fmt`
-    
     _ `unsafe`
 )
 """
 
-_const_src = r"""
-package test
+_const_src = r"""package test
+
+// #include <stdio.h>
+// #include <stdlib.h>
+import `C`
+
+/*
+#include <stdint.h>
+*/
+import `C`
 
 type Foo struct {
     x, y      float64 ""  // an empty tag string is like an absent tag
@@ -287,7 +295,7 @@ func baz() {}
 
 class TestParser(unittest.TestCase):
     def test_import(self):
-        Parser(Tokenizer(_import_src, 'test.go')).parse()
+        print(Parser(Tokenizer(_import_src, 'test.go')).parse())
 
     def test_const(self):
         print(Parser(Tokenizer(_const_src, 'test.go')).parse())

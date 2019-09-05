@@ -2,7 +2,7 @@
 
 from enum import IntEnum
 
-from typing import Type as Tp
+from typing import Dict
 from typing import List
 from typing import Optional
 
@@ -37,6 +37,8 @@ class Kind(IntEnum):
     String        = 24
     Struct        = 25
     UnsafePointer = 26
+    Type          = 254
+    Package       = 255
 
 class Type(metaclass = StrictFields):
     kind: Kind
@@ -59,15 +61,7 @@ class Type(metaclass = StrictFields):
     Float64        : 'Type'
     Complex64      : 'Type'
     Complex128     : 'Type'
-    Array          : Tp['ArrayType']
-    Chan           : Tp['ChanType']
-    Func           : Tp['FuncType']
-    Interface      : Tp['InterfaceType']
-    Map            : Tp['MapType']
-    Ptr            : Tp['PtrType']
-    Slice          : Tp['SliceType']
     String         : 'Type'
-    Struct         : Tp['StructType']
     UnsafePointer  : 'Type'
 
     ### Untyped Types for Constants ###
@@ -199,6 +193,25 @@ class InheritedType(Type):
     def __str__(self) -> str:
         return 'inherited<%s>' % str(self.type)
 
+class MetaType(Type):
+    type: Type
+
+    def __init__(self, rtype: Type):
+        self.type = rtype
+        super().__init__(Kind.Type)
+
+class MetaPackage(Type):
+    path    : str
+    done    : bool
+    vars    : Dict[str, Type]
+    funcs   : Dict[str, FuncType]
+    types   : Dict[str, MetaType]
+    consts  : Dict[str, Type]
+
+    def __init__(self, path: str):
+        self.path = path
+        super().__init__(Kind.Package)
+
 Type.Bool           = Type(Kind.Bool)
 Type.Int            = Type(Kind.Int)
 Type.Int8           = Type(Kind.Int8)
@@ -215,15 +228,7 @@ Type.Float32        = Type(Kind.Float32)
 Type.Float64        = Type(Kind.Float64)
 Type.Complex64      = Type(Kind.Complex64)
 Type.Complex128     = Type(Kind.Complex128)
-Type.Array          = ArrayType
-Type.Chan           = ChanType
-Type.Func           = FuncType
-Type.Interface      = InterfaceType
-Type.Map            = MapType
-Type.Ptr            = PtrType
-Type.Slice          = SliceType
 Type.String         = Type(Kind.String)
-Type.Struct         = StructType
 Type.UnsafePointer  = Type(Kind.UnsafePointer)
 
 Type.UntypedInt     = UntypedType(Kind.Int)

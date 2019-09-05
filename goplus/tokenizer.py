@@ -18,6 +18,12 @@ class State:
     row: int
     pos: int
 
+    __slots__ = (
+        'col',
+        'row',
+        'pos',
+    )
+
     def __init__(self):
         self.col = 0
         self.row = 0
@@ -37,9 +43,17 @@ class Token:
     kind  : 'TokenType'
     value : 'TokenValue'
 
-    def __init__(self, st: State, fname: str, kind: 'TokenType', value: 'TokenValue'):
-        self.col = st.col
-        self.row = st.row
+    __slots__ = (
+        'col',
+        'row',
+        'file',
+        'kind',
+        'value',
+    )
+
+    def __init__(self, col: int, row: int, fname: str, kind: 'TokenType', value: 'TokenValue'):
+        self.col = col
+        self.row = row
         self.kind = kind
         self.file = fname
         self.value = value
@@ -50,48 +64,55 @@ class Token:
         else:
             return '#{%d,%d,%s=%r}' % (self.row + 1, self.col + 1, self.kind.name, self.value)
 
+    def copy(self) -> 'Token':
+        return Token(self.col, self.row, self.file, self.kind, self.value)
+
     @classmethod
     def eol(cls, tk: 'Tokenizer'):
-        return cls(tk.save, tk.file, TokenType.LF, None)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.LF, None)
 
     @classmethod
     def end(cls, tk: 'Tokenizer'):
-        return cls(tk.save, tk.file, TokenType.End, None)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.End, None)
 
     @classmethod
     def int(cls, tk: 'Tokenizer', value: int):
-        return cls(tk.save, tk.file, TokenType.Int, value)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.Int, value)
 
     @classmethod
     def rune(cls, tk: 'Tokenizer', value: bytes):
-        return cls(tk.save, tk.file, TokenType.Rune, value)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.Rune, value)
 
     @classmethod
     def ident(cls, tk: 'Tokenizer', value: str):
         if value not in KEYWORDS:
-            return cls(tk.save, tk.file, TokenType.Name, value)
+            return cls(tk.save.col, tk.save.row, tk.file, TokenType.Name, value)
         else:
-            return cls(tk.save, tk.file, TokenType.Keyword, value)
+            return cls(tk.save.col, tk.save.row, tk.file, TokenType.Keyword, value)
 
     @classmethod
     def float(cls, tk: 'Tokenizer', value: float):
-        return cls(tk.save, tk.file, TokenType.Float, value)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.Float, value)
 
     @classmethod
     def string(cls, tk: 'Tokenizer', value: bytes):
-        return cls(tk.save, tk.file, TokenType.String, value)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.String, value)
 
     @classmethod
     def complex(cls, tk: 'Tokenizer', value: complex):
-        return cls(tk.save, tk.file, TokenType.Complex, value)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.Complex, value)
 
     @classmethod
     def operator(cls, tk: 'Tokenizer', value: str):
-        return cls(tk.save, tk.file, TokenType.Operator, value)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.Operator, value)
+
+    @classmethod
+    def comments(cls, tk: 'Tokenizer', value: str):
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.Comments, value)
 
     @classmethod
     def directive(cls, tk: 'Tokenizer', value: 'Directive'):
-        return cls(tk.save, tk.file, TokenType.Directive, value)
+        return cls(tk.save.col, tk.save.row, tk.file, TokenType.Directive, value)
 
 class NoSplitDirective:
     def __repr__(self):
@@ -125,6 +146,7 @@ class TokenType(IntEnum):
     Complex   = 7
     Keyword   = 8
     Operator  = 9
+    Comments  = 254
     Directive = 255
 
 TokenValue = Optional[Union[
@@ -230,17 +252,30 @@ STD_ESCAPE = {
 IDENT_REMS  = re.compile(r'\w', re.U)
 IDENT_FIRST = re.compile(r'[^\W\d]', re.U)
 
-class _GotDirective(BaseException):
-    val: Directive
+class _GotComments(BaseException):
+    text: str
 
-    def __init__(self, val: Directive):
-        self.val = val
+    def __init__(self, text: str):
+        self.text = text
+
+class _GotDirective(BaseException):
+    pragma: Directive
+
+    def __init__(self, pragma: Directive):
+        self.pragma = pragma
 
 class Tokenizer:
     src   : str
     file  : str
     save  : State
     state : State
+
+    __slots__ = (
+        'src',
+        'file',
+        'save',
+        'state',
+    )
 
     def __init__(self, src: str, fname: str):
         self.src = src
@@ -297,16 +332,16 @@ class Tokenizer:
         self.save.pos = self.state.pos
         return self._next_char()
 
-    def _skip_space(self, ch: str, nonl: bool) -> str:
-        while ch.isspace() and (nonl or ch != '\n'):
+    def _skip_space(self, ch: str) -> str:
+        while ch.isspace() and (ch != '\n'):
             ch = self._skip_char()
         else:
             return ch
 
-    def _skip_blanks(self, nonl: bool) -> str:
+    def _skip_blanks(self) -> str:
         while True:
             ch = self._skip_char()
-            ch = self._skip_space(ch, nonl)
+            ch = self._skip_space(ch)
 
             # unix style comments
             if ch == '#':
@@ -319,8 +354,11 @@ class Tokenizer:
 
             # line comments
             if self._next_char() == '/':
-                self._check_directives()
-                continue
+                if not self._check_sol() or not self._check_prefix('go:', 'line '):
+                    raise _GotComments(self._skip_eol() + '\n')
+                else:
+                    self._handle_directives(self._skip_eol(), block = False)
+                    continue
 
             # skip the '*' char
             cc = ''
@@ -339,12 +377,10 @@ class Tokenizer:
             if not nch:
                 raise self._error('EOF when scanning block comments')
 
-            # comment containing new lines acts like a newline
-            if nl and not nonl:
-                return '\n'
-
             # special case for 'line' directive
-            if not nl and cc.startswith('line '):
+            if not cc.startswith('line '):
+                raise _GotComments(cc[:-1])
+            else:
                 self._handle_directives(cc[:-1], block = True)
 
     def _read_rune(self, ch: str) -> bytes:
@@ -419,44 +455,49 @@ class Tokenizer:
         else:
             return False
 
-    def _check_directives(self):
-        if not self._check_sol() or not self._check_prefix('go:', 'line '):
-            self._skip_eol()
-        else:
-            self._handle_directives(self._skip_eol(), block = False)
-
     def _handle_directives(self, cdir: str, block: bool):
         if cdir == 'go:nosplit':
             raise _GotDirective(NoSplitDirective())
         elif cdir == 'go:noescape':
             raise _GotDirective(NoEscapeDirective())
         elif cdir.startswith('line '):
-            self._handle_directives_line(cdir[5:].rsplit(':', 2), block)
+            self._handle_directives_line(cdir, cdir[5:].rsplit(':', 2), block)
         elif cdir.startswith('go:linkname '):
-            self._handle_directives_linkname(list(filter(None, cdir[12:].split(' '))))
+            self._handle_directives_linkname(cdir, list(filter(None, cdir[12:].split(' '))), block)
 
-    def _handle_directives_line(self, args: List[str], block: bool):
-        if args[-1].isdigit() and int(args[-1]) > 0:
-            if not block and self._next_char() != '\n':
-                raise SystemError('incorrect tokenizer state')
+    def _handle_directives_line(self, cdir: str, args: List[str], block: bool):
+        try:
+            row = int(args[-1])
+        except ValueError:
+            raise _GotComments(cdir)
 
-            # adjust the row number
-            st = self.state
-            st.row = int(args[-1]) - 1
+        # check tokenizer state
+        if not block and self._next_char() != '\n':
+            raise SystemError('incorrect tokenizer state')
 
-            # check for column number
-            if len(args) <= 2 or not args[-2].isdigit() or int(args[-2]) <= 0:
-                name = ':'.join(args[:-1])
-            else:
-                name = ':'.join(args[:-2])
-                st.row, st.col = int(args[-2]) - 1, st.row
+        # row number must be greater than 0
+        if row <= 0:
+            raise _GotComments(cdir + ('' if block else '\n'))
 
-            # check for file name
-            if name:
-                self.file = name
+        # adjust the row number
+        st = self.state
+        st.row = row - 1
 
-    def _handle_directives_linkname(self, args: List[str]):
-        if len(args) == 2:
+        # check for column number
+        if len(args) <= 2 or not args[-2].isdigit() or int(args[-2]) <= 0:
+            name = ':'.join(args[:-1])
+        else:
+            name = ':'.join(args[:-2])
+            st.row, st.col = int(args[-2]) - 1, st.row
+
+        # check for file name
+        if name:
+            self.file = name
+
+    def _handle_directives_linkname(self, cdir: str, args: List[str], block: bool):
+        if len(args) != 2:
+            raise _GotComments(cdir + ('' if block else '\n'))
+        else:
             ret = LinkNameDirective()
             ret.name, ret.link = args
             raise _GotDirective(ret)
@@ -517,7 +558,7 @@ class Tokenizer:
         # scan until end of quote
         while nch != '"':
             ret += self._read_rune(nch)
-            nch = self._next_char()
+            nch = self._skip_char()
 
         # build the token
         return Token.string(self, ret)
@@ -669,11 +710,15 @@ class Tokenizer:
     def is_eof(self):
         return self.state.pos >= len(self.src)
 
-    def next(self, ignore_nl: bool = False) -> Token:
+    def next(self) -> Token:
         try:
-            return self._parse(self._skip_blanks(ignore_nl))
+            nch = self._skip_blanks()
+        except _GotComments as e:
+            return Token.comments(self, e.text)
         except _GotDirective as e:
-            return Token.directive(self, e.val)
+            return Token.directive(self, e.pragma)
+        else:
+            return self._parse(nch)
 
     def save_state(self) -> State:
         return self.state.copy()

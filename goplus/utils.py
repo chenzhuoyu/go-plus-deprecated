@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 
+import platform
+
 from typing import Any
 from typing import Dict
 from typing import Type
@@ -11,28 +13,44 @@ class StrictFields(type):
         typing = ns.get('__annotations__', {})
         return super().__new__(mcs, name, bases, _build_attrs(ns, bases, typing))
 
-# noinspection PyProtectedMember
+# this differs between implementations
+if platform.python_implementation() == 'PyPy':
+    def _real_type(vtype: Any) -> type:
+        try:
+            return vtype.__extra__
+        except AttributeError:
+            return vtype
+else:
+    def _real_type(vtype: Any) -> type:
+        try:
+            return vtype.__origin__
+        except AttributeError:
+            return vtype
+
 def _add_attrs(self: Any, fields: Dict[str, Any]):
     for name, vtype in fields.items():
-        try:
-            if vtype is bool:
-                setattr(self, name, False)
-            elif vtype._name == 'Dict':
-                setattr(self, name, {})
-            elif vtype._name == 'List':
-                setattr(self, name, [])
-            elif vtype._name == 'Tuple':
-                setattr(self, name, ())
-            elif vtype.__origin__ is Union:
-                _add_union(self, name, vtype)
-        except AttributeError:
-            pass
+        _add_generic(self, name, vtype, _real_type(vtype))
 
 def _add_union(self: Any, name: str, vtype: Any):
     if bool in vtype.__args__:
         setattr(self, name, False)
     elif type(None) in vtype.__args__:
         setattr(self, name, None)
+
+def _add_generic(self: Any, name: str, vtype: Any, real: Any):
+    try:
+        if real is bool:
+            setattr(self, name, False)
+        elif real is dict:
+            setattr(self, name, {})
+        elif real is list:
+            setattr(self, name, [])
+        elif real is tuple:
+            setattr(self, name, ())
+        elif vtype.__origin__ is Union:
+            _add_union(self, name, vtype)
+    except AttributeError:
+        pass
 
 def _build_attrs(ns: Dict[str, Any], bases: Tuple[Type], fields: Dict[str, Any]) -> Dict[str, Any]:
     def init(self, *args, **kwargs):

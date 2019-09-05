@@ -12,6 +12,8 @@ from .ast import LinkSpec
 from .ast import InitSpec
 from .ast import TypeSpec
 from .ast import Function
+
+from .ast import ImportC
 from .ast import ImportSpec
 
 from .ast import Int
@@ -168,6 +170,11 @@ BINARY_OPERATORS = [
     {'*' , '/' , '%', '<<', '>>', '&', '&^'},
 ]
 
+ESLICE_OPERATORS = {
+    ':',
+    ']',
+}
+
 INCDEC_OPERATORS = {
     '++',
     '--',
@@ -209,8 +216,10 @@ PState = Tuple[
     State,
     Token,
     Token,
+    Token,
     int,
     int,
+    Token,
     FunctionOptions,
 ]
 
@@ -220,7 +229,20 @@ class Parser:
     iota   : int
     last   : Optional[Token]
     prev   : Optional[Token]
+    save   : Optional[Token]
+    block  : Optional[Token]
     fflags : FunctionOptions
+
+    __slots__ = (
+        'lx',
+        'expr',
+        'iota',
+        'last',
+        'prev',
+        'save',
+        'block',
+        'fflags',
+    )
 
     class _Scope:
         ps: 'Parser'
@@ -276,13 +298,38 @@ class Parser:
         self.iota = 0
         self.last = None
         self.prev = None
+        self.save = None
+        self.block = None
         self.fflags = FunctionOptions(0)
 
     ### Tokenizer Interfaces ###
 
+    def _pull(self) -> Token:
+        while True:
+            tk = self.lx.next()
+            pr, self.prev = self.prev, tk
+
+            # only combines comments when they are right next to each other
+            if pr and pr.kind == tk.kind == TokenType.LF:
+                self.block = None
+
+            # check for comments
+            if tk.kind != TokenType.Comments:
+                return tk
+
+            # append to previous comment block
+            if self.block is None:
+                self.block = tk.copy()
+            else:
+                self.block.value += tk.value
+
+            # comments containing newline act like newlines
+            if '\n' in tk.value:
+                return Token.eol(self.lx)
+
     def _read(self) -> Token:
-        token = self.lx.next()
-        state = self.lx.save.copy()
+        lexer = self.lx
+        token = self._pull()
 
         # not a new line
         if token.kind != TokenType.LF:
@@ -293,25 +340,29 @@ class Parser:
         # refs: https://golang.org/ref/spec#Semicolons
         if self.last and _is_end_token(self.last):
             self.last = None
-            return Token(state, self.lx.file, TokenType.Operator, ';')
+            return Token.operator(lexer, ';')
 
         # otherwise, just skip the new line
-        self.last = self.lx.next(ignore_nl = True)
+        while token.kind == TokenType.LF:
+            token = self._pull()
+
+        # save the token
+        self.last = token
         return self.last
 
     def _next(self) -> Token:
-        if self.prev is None:
+        if self.save is None:
             return self._read()
         else:
-            ret, self.prev = self.prev, None
+            ret, self.save = self.save, None
             return ret
 
     def _peek(self) -> Token:
-        if self.prev is not None:
-            return self.prev
+        if self.save is not None:
+            return self.save
         else:
-            self.prev = self._read()
-            return self.prev
+            self.save = self._read()
+            return self.save
 
     def _error(self, tk: Token, msg: str) -> SyntaxError:
         return SyntaxError('%s:%d:%d: %s' % (tk.file, tk.row + 1, tk.col + 1, msg))
@@ -327,7 +378,7 @@ class Parser:
         else:
             return tk
 
-    def _delimiter(self, delim: str):
+    def _delimiter(self, delim: str, drop: bool = True):
         tk = self._peek()
         tt, tv = tk.kind, tk.value
 
@@ -336,17 +387,8 @@ class Parser:
             raise self._error(tk, '%s or new line expected' % repr(delim))
 
         # skip the actual delimiter
-        if tv == delim:
+        if drop and tv == delim:
             self._next()
-
-    ### State Management ###
-
-    def save_state(self) -> PState:
-        return self.lx.save_state(), self.last, self.prev, self.iota, self.expr, self.fflags
-
-    def load_state(self, state: PState):
-        st, self.last, self.prev, self.iota, self.expr, self.fflags = state
-        self.lx.load_state(st)
 
     ### Helper Functions ###
 
@@ -385,7 +427,7 @@ class Parser:
     def _is_label(self) -> bool:
         with self._Scope(self):
             try:
-                self._parse_name()
+                self._require(self._next(), TokenType.Name)
                 self._require(self._next(), TokenType.Operator, ':')
             except SyntaxError:
                 return False
@@ -418,6 +460,7 @@ class Parser:
     def _is_named_type(self) -> bool:
         with self._Scope(self):
             try:
+                self._require(self._peek(), TokenType.Name)
                 self._parse_named_type()
             except SyntaxError:
                 return False
@@ -499,57 +542,29 @@ class Parser:
         else:
             return args[0]
 
-    ### Expression Prunning Functions ###
+    ### Expression Prunning Function ###
 
-    def _prune_expression_tree(self, expr: Expression) -> Expression:
-        if isinstance(expr.left, Primary):
-            expr = self._prune_expression_primary(expr)
-        else:
-            expr.left = self._prune_expression_tree(expr.left)
+    def _trim_expression_tree(self, expr: Expression) -> Expression:
+        if isinstance(expr.left, Expression):
+            expr.left = self._trim_expression_tree(expr.left)
 
         # prune right expression
         if expr.right is not None:
-            expr.right = self._prune_expression_tree(expr.right)
+            expr.right = self._trim_expression_tree(expr.right)
 
         # promote the left term if no operator and right term present
         if expr.op is not None:
             return expr
         elif expr.right is not None:
             return expr
-        elif isinstance(expr.left, Primary):
-            return expr
-        else:
+        elif isinstance(expr.left, Expression):
             return expr.left
-
-    def _prune_expression_primary(self, expr: Expression) -> Expression:
-        for mod in expr.left.mods:
-            if isinstance(mod, Index):
-                self._prune_expression_primary_index(mod)
-            elif isinstance(mod, Slice):
-                self._prune_expression_primary_slice(mod)
-            elif isinstance(mod, Arguments):
-                self._prune_expression_primary_arguments(mod)
+        elif expr.left.mods:
+            return expr
+        elif isinstance(expr.left.val, Expression):
+            return expr.left.val
         else:
-            if not isinstance(expr.left.val, Expression):
-                return expr
-            elif not expr.left.mods:
-                return self._prune_expression_tree(expr.left.val)
-            else:
-                expr.left.val = self._prune_expression_tree(expr.left.val)
-                return expr
-
-    def _prune_expression_primary_index(self, mod: Index):
-        mod.expr = self._prune_expression_tree(mod.expr)
-
-    def _prune_expression_primary_slice(self, mod: Slice):
-        mod.pos = mod.pos and self._prune_expression_tree(mod.pos)
-        mod.len = mod.len and self._prune_expression_tree(mod.len)
-        mod.cap = mod.cap and self._prune_expression_tree(mod.cap)
-
-    def _prune_expression_primary_arguments(self, mod: Arguments):
-        for i, arg in enumerate(mod.args):
-            if isinstance(arg, Expression):
-                mod.args[i] = self._prune_expression_tree(arg)
+            return expr
 
     ### Basic Structure Parsers ###
 
@@ -741,6 +756,7 @@ class Parser:
         # arrays without length: [...] <type>
         elif self._should(self._peek(), TokenType.Operator, '...') and for_literal:
             ret = VarArrayType(tk)
+            self._next()
             self._require(self._next(), TokenType.Operator, ']')
 
         # arrays with length: [<len>] type
@@ -1113,8 +1129,8 @@ class Parser:
         else:
             ret.terms = self._parse_for_range_vars()
 
-        # must have 1 or 2 terms before the "range" operator
-        if 1 <= len(ret.terms) <= 2:
+        # must have 0 to 2 terms before the "range" operator
+        if len(ret.terms) <= 2:
             self._require(self._next(), TokenType.Keyword, 'range')
         else:
             raise self._error(self._peek(), 'invalid number of range variables')
@@ -1128,9 +1144,12 @@ class Parser:
         self._require(self._next(), TokenType.Operator, '=')
         return ret
 
-    def _parse_for_range_vars(self):
+    def _parse_for_range_vars(self) -> List[Expression]:
         with self._Control(self):
-            return self._parse_for_range_eq(self._parse_expressions())
+            if self._should(self._peek(), TokenType.Keyword, 'range'):
+                return []
+            else:
+                return self._parse_for_range_eq(self._parse_expressions())
 
     def _parse_defer(self) -> Defer:
         ret = Defer(self._next())
@@ -1165,18 +1184,21 @@ class Parser:
             ret.svd = True
             ret.terms = self._parse_svd()
         except SyntaxError:
+            ret.svd = False
             self.load_state(st)
-            self._parse_select_case_assign(ret)
+
+        # maybe assignment, maybe it's just a simple receive
+        if not ret.svd:
+            try:
+                ret.terms = self._parse_expressions()
+                self._require(self._next(), TokenType.Operator, '=')
+            except SyntaxError:
+                ret.terms.clear()
+                self.load_state(st)
 
         # parse the receive expression
         ret.value = self._parse_expression()
         case.expr = ret
-
-    def _parse_select_case_assign(self, ret: SelectReceive):
-        ret.svd = False
-        ret.terms = self._parse_expressions()
-        self._require(self._next(), TokenType.Operator, '=')
-        return ret
 
     def _parse_switch(self) -> Union[Switch, TypeSwitch]:
         tk = self._next()
@@ -1250,8 +1272,12 @@ class Parser:
     def _parse_labeled(self) -> Label:
         ret = Label(self._peek())
         ret.name = self._parse_name()
-        ret.body = self._parse_statement()
+        ret.body = self._parse_labeled_body()
         return ret
+
+    def _parse_labeled_body(self) -> Statement:
+        self._require(self._next(), TokenType.Operator, ':')
+        return self._parse_statement()
 
     ### Language Structures --- Statements / Control Flow Transfers ###
 
@@ -1305,9 +1331,9 @@ class Parser:
         ret.incr = self._should(self._next(), TokenType.Operator, '++')
         return ret
 
-    def _parse_assignment(self) -> Assignment:
-        ret = Assignment(self._peek())
-        ret.lval = self._parse_expressions()
+    def _parse_assignment(self, tk: Token, lhs: List[Expression]) -> Assignment:
+        ret = Assignment(tk)
+        ret.lval = lhs
         ret.type = self._parse_operator(ASSIGNMENT_OPERATORS)
         ret.rval = self._parse_expressions()
         return ret
@@ -1321,8 +1347,14 @@ class Parser:
             return self._parse_if()
         elif self._should(self._peek(), TokenType.Keyword, 'for'):
             return self._parse_for()
+        elif self._should(self._peek(), TokenType.Keyword, 'var'):
+            return self._parse_decl_statement(self._parse_var)
         elif self._should(self._peek(), TokenType.Keyword, 'goto'):
             return self._parse_goto()
+        elif self._should(self._peek(), TokenType.Keyword, 'type'):
+            return self._parse_decl_statement(self._parse_type_spec)
+        elif self._should(self._peek(), TokenType.Keyword, 'const'):
+            return self._parse_decl_statement(self._parse_val)
         elif self._should(self._peek(), TokenType.Keyword, 'defer'):
             return self._parse_defer()
         elif self._should(self._peek(), TokenType.Keyword, 'break'):
@@ -1339,10 +1371,21 @@ class Parser:
             return self._parse_fallthrough()
         elif self._should(self._peek(), TokenType.Operator, '{'):
             return self._parse_compound_statement()
-        elif self._is_label():
+        if self._is_label():
             return self._parse_labeled()
         else:
             return self._parse_simple_statement()
+
+    InnerSpecs = List[Union[
+        InitSpec,
+        TypeSpec,
+    ]]
+
+    def _parse_decl_statement(self, parser: Callable[[Token, InnerSpecs], None]) -> InnerSpecs:
+        ret = []
+        self._next()
+        self._parse_declarations(ret, parser)
+        return ret
 
     def _parse_simple_statement(self) -> SimpleStatement:
         tk = self._peek()
@@ -1362,26 +1405,28 @@ class Parser:
             ret.values = self._parse_expressions()
             return ret
 
-        # try parse one expression
-        st = self.save_state()
-        expr = self._parse_expression()
+        # parse the left-hand side operands
+        tk = self._peek()
+        lhs = self._parse_expressions()
 
-        # pure expression
-        if self._should(self._peek(), TokenType.Operator, ';'):
-            return expr
+        # check for assignment operators
+        if self._is_ops(ASSIGNMENT_OPERATORS):
+            return self._parse_assignment(tk, lhs)
+
+        # not an assignment, then there must be exact 1 expression
+        if len(lhs) > 1:
+            raise self._error(tk, 'expected 1 expression')
 
         # send statement
         if self._should(self._peek(), TokenType.Operator, '<-'):
             self._next()
-            return self._parse_send(tk, expr)
+            return self._parse_send(tk, lhs[0])
 
-        # incremental or decremental
-        if self._is_ops(INCDEC_OPERATORS):
-            return self._parse_incdec(tk, expr)
-
-        # must be assignment
-        self.load_state(st)
-        return self._parse_assignment()
+        # check for incremental or decremental
+        if not self._is_ops(INCDEC_OPERATORS):
+            return lhs[0]
+        else:
+            return self._parse_incdec(tk, lhs[0])
 
     def _parse_compound_statement(self) -> CompoundStatement:
         tk = self._next()
@@ -1570,13 +1615,8 @@ class Parser:
         tk = self._next()
         ret = Slice(self._require(tk, TokenType.Operator, '['))
 
-        # ':' encountered, must be a slice
-        if self._should(self._peek(), TokenType.Operator, ':'):
-            self._next()
-            ret.pos = None
-
-        # otherwise assume it's an index
-        else:
+        # if ':' encountered, it must be a slice, otherwise assume it's an index
+        if not self._should(self._peek(), TokenType.Operator, ':'):
             with self._Nested(self):
                 idx = Index(tk)
                 idx.expr = ret.pos = self._parse_expression()
@@ -1593,7 +1633,7 @@ class Parser:
 
             # it might be an empty expression
             with self._Nested(self):
-                if not self._should(self._peek(), TokenType.Operator, ':'):
+                if not self._is_ops(ESLICE_OPERATORS):
                     ret.len = self._parse_expression()
 
         # optional capacity expression
@@ -1676,7 +1716,7 @@ class Parser:
                 args.append(self._parse_expression())
 
     def _parse_expression(self) -> Expression:
-        return self._prune_expression_tree(self._parse_expr(prec = 0))
+        return self._trim_expression_tree(self._parse_expr(prec = 0))
 
     ### Top Level Parsers --- Functions & Methods ###
 
@@ -1720,7 +1760,7 @@ class Parser:
         val = InitSpec(tk)
         val.names.append(Name(self._require(tk, TokenType.Name)))
 
-        # const a, b, c, ...
+        # var / const a, b, c, ...
         while self._should(self._peek(), TokenType.Operator, ','):
             self._next()
             val.names.append(self._parse_name())
@@ -1788,11 +1828,13 @@ class Parser:
         self.iota += 1
         self.fflags = FunctionOptions(0)
 
-    def _parse_declarations(
-        self,
-        ret    : List[Union[InitSpec, TypeSpec, ImportSpec]],
-        parser : Callable[[Token, List[Union[InitSpec, TypeSpec, ImportSpec]]], None],
-    ):
+    TopSpecs = List[Union[
+        InitSpec,
+        TypeSpec,
+        ImportSpec,
+    ]]
+
+    def _parse_declarations(self, ret: TopSpecs, parser: Callable[[Token, TopSpecs], None]):
         if not self._should(self._peek(), TokenType.Operator, '('):
             self._group_reset()
             parser(self._next(), ret)
@@ -1802,11 +1844,7 @@ class Parser:
             self._parse_declaration_group(ret, parser)
             self._require(self._next(), TokenType.Operator, ')')
 
-    def _parse_declaration_group(
-        self,
-        ret    : List[Union[InitSpec, TypeSpec, ImportSpec]],
-        parser : Callable[[Token, List[Union[InitSpec, TypeSpec, ImportSpec]]], None],
-    ):
+    def _parse_declaration_group(self, ret: TopSpecs, parser: Callable[[Token, TopSpecs], None]):
         while not self._should(self._peek(), TokenType.Operator, ')'):
             parser(self._next(), ret)
             self._group_increment()
@@ -1828,10 +1866,10 @@ class Parser:
             raise SystemError('invalid compiler directive')
 
     def _parse_val(self, tk: Token, ret: List[InitSpec]):
-        self._parse_var_spec(tk, ret, consts= True)
+        self._parse_var_spec(tk, ret, consts = True)
 
     def _parse_var(self, tk: Token, ret: List[InitSpec]):
-        self._parse_var_spec(tk, ret, consts= False)
+        self._parse_var_spec(tk, ret, consts = False)
 
     def _parse_decl(self, tk: Token, ret: Package):
         if tk.value == 'func':
@@ -1856,12 +1894,37 @@ class Parser:
         ret = Package(tk)
         self._parse_package(ret)
         self._delimiter(';')
+        self.block = None
 
         # imports go before other declarations
         while self._should(self._peek(), TokenType.Keyword, 'import'):
-            self._next()
-            self._parse_declarations(ret.imports, self._parse_import_spec)
+            imps = []
+            token = self._next()
+
+            # parse the import spec
+            self._parse_declarations(imps, self._parse_import_spec)
             self._delimiter(';')
+
+            # special case of "import `C`"
+            if len(imps) != 1 or imps[0].path.value != b'C':
+                self.block = None
+                ret.imports.extend(imps)
+                continue
+
+            # rename for "import `C`" is not allowed
+            if imps[0].alias is not None:
+                raise self._error(token, 'cannot rename import `C`')
+
+            # special case of "import `C`" with no source
+            if self.block is not None:
+                spec = ImportC(self.block)
+            else:
+                spec = ImportC(Token(token.col, token.row, token.file, TokenType.Comments, ''))
+
+            # use the alias to store C source code
+            self.block = None
+            imps[0].alias = spec
+            ret.imports.append(imps[0])
 
         # parse other top-level declarations
         while True:
@@ -1880,3 +1943,21 @@ class Parser:
         # otherwise it's an unexpected token
         tk = self._next()
         raise self._error(tk, 'unexpected token %s' % repr(tk))
+
+    ### State Management ###
+
+    def save_state(self) -> PState:
+        return (
+            self.lx.save_state(),
+            self.last,
+            self.prev,
+            self.save,
+            self.iota,
+            self.expr,
+            self.block,
+            self.fflags,
+        )
+
+    def load_state(self, state: PState):
+        st, self.last, self.prev, self.save, self.iota, self.expr, self.block, self.fflags = state
+        self.lx.load_state(st)
