@@ -364,11 +364,9 @@ class Inferrer:
 
             # eval tags
             if not tags.eval(tagv):
-                print('# ignoring [%s]: %s' % (tags, path))
                 continue
 
             # parse the file
-            print('* parsing:', path)
             parser = Parser(Tokenizer(source, path))
             package = parser.parse()
 

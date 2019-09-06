@@ -3,6 +3,7 @@
 import re
 
 from typing import List
+from typing import Tuple
 from typing import Union
 from typing import Optional
 
@@ -319,16 +320,16 @@ class Tokenizer:
         return ch
 
     def _skip_eol(self) -> str:
-        ret = ''
-        nch = self._peek_char()
+        pos = self.state.pos
+        end = self.src.find('\n', pos)
 
-        # read the whole line
-        while nch not in ('', '\n'):
-            ret += self._next_char()
-            nch = self._peek_char()
+        # adjust state
+        self.state.pos = end
+        self.state.col += end - pos
 
-        # all done
-        return ret
+        # slice directly from source
+        # this is way faster than read char by char
+        return self.src[pos:end]
 
     def _skip_char(self) -> str:
         self.save.col = self.state.col
@@ -364,34 +365,57 @@ class Tokenizer:
                     self._handle_directives(self._skip_eol(), block = False)
                     continue
 
-            # skip the '*' char
-            cc = ''
-            nl = False
-            end = False
-            nch = self._next_char()
-
-            # block comments
-            while nch and (not end or nch != '/'):
-                cc += nch
-                nl |= nch == '\n'
-                end = nch == '*'
-                nch = self._next_char()
-
-            # check for EOF
-            if not nch:
-                raise self._error('EOF when scanning block comments')
+            # locate the comment end
+            pos = self.state.pos + 1
+            end = self.src.find('*/', pos)
+            ret = self._read_fast(pos, end, 2)
 
             # special case for 'line' directive
-            if not cc.startswith('line '):
-                raise _GotComments(cc[:-1])
+            if not ret.startswith('line '):
+                raise _GotComments(ret)
             else:
-                self._handle_directives(cc[:-1], block = True)
+                self._handle_directives(ret, block = True)
 
     def _read_rune(self, ch: str) -> bytes:
         if ch != '\\':
             return ch.encode('utf-8')
         else:
             return self._read_escape(self._next_char())
+
+    def _read_fast(self, pos: int, end: int, tail: int) -> str:
+        ret = self.src[pos:end]
+        nnl = ret.count('\n')
+
+        # adjust column based on new-line count
+        if nnl > 0:
+            self.state.col = len(ret) - ret.rfind('\n') - 1
+        else:
+            self.state.col += len(ret) + tail
+
+        # adjust state position and row counter
+        self.state.pos = end + tail
+        self.state.row += nnl
+        return ret
+
+    def _read_until(self, quote: str, delim: Optional[str] = None) -> Tuple[str, bytes]:
+        pos = self.state.pos
+        end = self.src.find(quote, pos)
+
+        # also consider delimiter, if any
+        if delim is not None:
+            dps = self.src.find(delim, pos)
+            end = dps if end < 0 else end if dps < 0 else min(dps, end)
+
+        # doesn't find anything
+        if end < 0:
+            raise self._error('unexpected EOF')
+
+        # slice directly from source
+        # this increases performance drastically
+        return (
+            self.src[end],
+            self._read_fast(pos, end, 1).encode('utf-8'),
+        )
 
     def _read_digit(self, name: str, charset: str) -> str:
         if self.is_eof or self._curr_char() not in charset:
@@ -529,19 +553,8 @@ class Tokenizer:
             raise self._error('invalid character %s' % repr(ch))
 
     def _parse_raw(self) -> Token:
-        ret = b''
-        nch = self._next_char()
-
-        # scan until the next '`'
-        while nch and nch != '`':
-            ret += nch.encode('utf-8')
-            nch = self._next_char()
-
-        # build the token
-        if not nch:
-            raise self._error('unexpected EOF')
-        else:
-            return Token.string(self, ret)
+        _, val = self._read_until('`')
+        return Token.string(self, val)
 
     def _parse_rune(self) -> Token:
         val = self._next_char()
@@ -557,15 +570,16 @@ class Tokenizer:
 
     def _parse_string(self) -> Token:
         ret = b''
-        nch = self._next_char()
+        nch, buf = self._read_until('"', '\\')
 
         # scan until end of quote
         while nch != '"':
+            ret += buf
             ret += self._read_rune(nch)
-            nch = self._skip_char()
+            nch, buf = self._read_until('"', '\\')
 
         # build the token
-        return Token.string(self, ret)
+        return Token.string(self, ret + buf)
 
     def _parse_number(self, first: str) -> Token:
         ret = first
