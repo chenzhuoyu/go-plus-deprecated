@@ -575,7 +575,7 @@ class Tokenizer:
         # scan until end of quote
         while nch != '"':
             ret += buf
-            ret += self._read_rune(nch)
+            ret += self._read_escape(self._next_char())
             nch, buf = self._read_until('"', '\\')
 
         # build the token
