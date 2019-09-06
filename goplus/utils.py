@@ -18,7 +18,7 @@ from bytecode import CompilerFlags
 from .assembler import Assembler
 
 class StrictFields(type):
-    def __new__(mcs, name: str, bases: Tuple[Type], ns: Dict[str, Any]):
+    def __new__(mcs, name: str, bases: Tuple[Type], ns: Dict[str, Any]) -> type:
         noinit = ns.pop('__noinit__', set())
         typing = ns.get('__annotations__', {})
         return super().__new__(mcs, name, bases, _build_attrs(ns, bases, typing, noinit))

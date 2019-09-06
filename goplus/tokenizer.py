@@ -58,7 +58,7 @@ class Token:
         self.file = fname
         self.value = value
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.value is None:
             return '#{%d,%d,%s}' % (self.row + 1, self.col + 1, self.kind.name)
         else:
@@ -115,18 +115,18 @@ class Token:
         return cls(tk.save.col, tk.save.row, tk.file, TokenType.Directive, value)
 
 class NoSplitDirective:
-    def __repr__(self):
+    def __repr__(self) -> str:
         return '#{go:nosplit}'
 
 class NoEscapeDirective:
-    def __repr__(self):
+    def __repr__(self) -> str:
         return '#{go:noescape}'
 
 class LinkNameDirective:
     name: str
     link: str
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return '#{go:linkname %s %s}' % (self.name, self.link)
 
 Directive = Union[

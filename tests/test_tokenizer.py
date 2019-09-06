@@ -3,6 +3,7 @@
 
 import unittest
 
+from goplus.tokenizer import Token
 from goplus.tokenizer import Tokenizer
 from goplus.tokenizer import TokenType
 from goplus.tokenizer import TokenValue
@@ -190,10 +191,19 @@ string_err_vals = (
 class TestTokenizer(unittest.TestCase):
     def verify(self, src: str, kind: TokenType, value: TokenValue = None, nonl: bool = True):
         tk = Tokenizer(src, '<test>')
-        token = tk.next(ignore_nl = nonl)
+        token = tk.next()
+        while token.kind == TokenType.Comments or (nonl and token.kind == TokenType.LF):
+            if token.kind == TokenType.Comments and not nonl and '\n' in token.value:
+                token = Token.eol(tk)
+                break
+            else:
+                token = tk.next()
         self.assertEqual(kind, token.kind, 'wrong token kind: %s' % token)
         self.assertEqual(value, token.value, 'wrong token value: %s' % token)
-        self.assertEqual(tk.next().kind, TokenType.End, 'should be EOF: %s' % token)
+        token = tk.next()
+        while token.kind == TokenType.Comments or token.kind == TokenType.LF:
+            token = tk.next()
+        self.assertEqual(TokenType.End, token.kind, 'should be EOF: %s' % token)
 
     def invalid(self, src: str, exc: str):
         self.assertRaisesRegex(SyntaxError, exc, lambda: Tokenizer(src, '<test>').next())
@@ -208,7 +218,7 @@ class TestTokenizer(unittest.TestCase):
             self.verify(val, TokenType.Name, val)
 
     def test_keywords(self):
-        for val in filter(None, map(str.strip, keywords.split())):
+        for val in keywords.split():
             self.verify(val, TokenType.Keyword, val)
 
     def test_operators(self):
@@ -258,6 +268,8 @@ class TestTokenizer(unittest.TestCase):
         token = tk.next()
         self.assertEqual(TokenType.Operator, token.kind)
         self.assertEqual('.', token.value)
+        token = tk.next()
+        self.assertEqual(TokenType.LF, token.kind)
         token = tk.next()
         self.assertEqual(TokenType.End, token.kind)
 

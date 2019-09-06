@@ -12,7 +12,7 @@ class Node:
         self.is_leaf = False
         self.children = defaultdict(self.__class__)
 
-    def __contains__(self, item):
+    def __contains__(self, item) -> bool:
         return item in self.children
 
     def insert(self, val: str):

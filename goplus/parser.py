@@ -244,7 +244,7 @@ class Parser:
         'fflags',
     )
 
-    class _Scope:
+    class Scope:
         ps: 'Parser'
         st: Optional[PState]
 
@@ -257,11 +257,11 @@ class Parser:
                 self.ps.load_state(self.st)
                 self.st = None
 
-        def __enter__(self):
+        def __enter__(self) -> 'Parser.Scope':
             self.st = self.ps.save_state()
             return self
 
-    class _Nested:
+    class Nested:
         ps: 'Parser'
 
         def __init__(self, ps: 'Parser'):
@@ -270,11 +270,11 @@ class Parser:
         def __exit__(self, exc_type, exc_val, exc_tb):
             self.ps.expr -= 1
 
-        def __enter__(self):
+        def __enter__(self) -> 'Parser.Nested':
             self.ps.expr += 1
             return self
 
-    class _Control:
+    class Control:
         ps: 'Parser'
         ex: Optional[int]
 
@@ -287,19 +287,19 @@ class Parser:
                 self.ps.expr = self.ex
                 self.ex = None
 
-        def __enter__(self):
+        def __enter__(self) -> 'Parser.Control':
             self.ex = self.ps.expr
             self.ps.expr = -1
             return self
 
     def __init__(self, lx: Tokenizer):
-        self.lx = lx
-        self.expr = 0
-        self.iota = 0
-        self.last = None
-        self.prev = None
-        self.save = None
-        self.block = None
+        self.lx     = lx
+        self.expr   = 0
+        self.iota   = 0
+        self.last   = None
+        self.prev   = None
+        self.save   = None
+        self.block  = None
         self.fflags = FunctionOptions(0)
 
     ### Tokenizer Interfaces ###
@@ -410,7 +410,7 @@ class Parser:
     ### Type Guessing Functions ###
 
     def _is_svd(self) -> bool:
-        with self._Scope(self):
+        with self.Scope(self):
             try:
                 self._parse_name()
                 self._ensure_svd_names()
@@ -425,7 +425,7 @@ class Parser:
         return tk.value in ops and tk.kind == TokenType.Operator
 
     def _is_label(self) -> bool:
-        with self._Scope(self):
+        with self.Scope(self):
             try:
                 self._require(self._next(), TokenType.Name)
                 self._require(self._next(), TokenType.Operator, ':')
@@ -445,7 +445,7 @@ class Parser:
             return False
 
     def _is_type_expr(self) -> bool:
-        with self._Scope(self):
+        with self.Scope(self):
             if not self._should(self._next(), TokenType.Operator, '.'):
                 return False
             elif not self._should(self._next(), TokenType.Operator, '('):
@@ -458,7 +458,7 @@ class Parser:
                 return True
 
     def _is_named_type(self) -> bool:
-        with self._Scope(self):
+        with self.Scope(self):
             try:
                 self._require(self._peek(), TokenType.Name)
                 self._parse_named_type()
@@ -468,7 +468,7 @@ class Parser:
                 return True
 
     def _is_literal_type(self) -> bool:
-        with self._Scope(self):
+        with self.Scope(self):
             try:
                 self._parse_literal_type()
                 self._require(self._next(), TokenType.Operator, '{')
@@ -478,7 +478,7 @@ class Parser:
                 return True
 
     def _is_argument_type(self) -> bool:
-        with self._Scope(self):
+        with self.Scope(self):
             try:
                 self._parse_type()
             except SyntaxError:
@@ -507,12 +507,12 @@ class Parser:
             return tv in TYPE_OPERATORS
 
         # try match rule :: Type = '(' Type ')' .
-        with self._Scope(self):
+        with self.Scope(self):
             self._next()
             return self._is_probably_type()
 
     def _is_conversion_type(self) -> bool:
-        with self._Scope(self):
+        with self.Scope(self):
             try:
                 self._ensure_not_names()
                 self._require(self._next(), TokenType.Operator, '(')
@@ -676,7 +676,7 @@ class Parser:
         return None
 
     def _parse_initializer_st(self) -> Optional[SimpleStatement]:
-        with self._Control(self):
+        with self.Control(self):
             try:
                 return self._parse_simple_statement()
             except SyntaxError:
@@ -693,7 +693,7 @@ class Parser:
         return self._parse_nested_end(self._parse_type())
 
     def _parse_nested_expr(self) -> Expression:
-        with self._Nested(self):
+        with self.Nested(self):
             self._next()
             return self._parse_nested_end(self._parse_expression())
 
@@ -761,7 +761,7 @@ class Parser:
 
         # arrays with length: [<len>] type
         else:
-            with self._Nested(self):
+            with self.Nested(self):
                 ret = ArrayType(tk)
                 ret.len = self._parse_expression()
                 self._require(self._next(), TokenType.Operator, ']')
@@ -1047,7 +1047,7 @@ class Parser:
         return ret
 
     def _parse_if_cond(self) -> Expression:
-        with self._Control(self):
+        with self.Control(self):
             return self._parse_expression()
 
     def _parse_if_branch(self) -> Optional[Union[If, CompoundStatement]]:
@@ -1085,7 +1085,7 @@ class Parser:
 
         # try 'for <cond> {}'
         try:
-            with self._Control(self):
+            with self.Control(self):
                 ret.cond = self._parse_expression()
                 self._require(self._peek(), TokenType.Operator, '{')
         except SyntaxError:
@@ -1095,7 +1095,7 @@ class Parser:
 
         # full 3-clauses 'for' loop, parse the initial statement if any
         if not self._should(self._peek(), TokenType.Operator, ';'):
-            with self._Control(self):
+            with self.Control(self):
                 ret.init = self._parse_simple_statement()
 
         # the first ';'
@@ -1104,7 +1104,7 @@ class Parser:
 
         # parse the conditional expression if any
         if not self._should(self._peek(), TokenType.Operator, ';'):
-            with self._Control(self):
+            with self.Control(self):
                 ret.cond = self._parse_expression()
 
         # the second ';'
@@ -1113,7 +1113,7 @@ class Parser:
 
         # parse the post statement if any
         if not self._should(self._peek(), TokenType.Operator, '{'):
-            with self._Control(self):
+            with self.Control(self):
                 ret.post = self._parse_simple_statement()
 
         # all done
@@ -1136,7 +1136,7 @@ class Parser:
             raise self._error(self._peek(), 'invalid number of range variables')
 
         # parse the range expression
-        with self._Control(self):
+        with self.Control(self):
             ret.expr = self._parse_expression()
             return ret
 
@@ -1145,7 +1145,7 @@ class Parser:
         return ret
 
     def _parse_for_range_vars(self) -> List[Expression]:
-        with self._Control(self):
+        with self.Control(self):
             if self._should(self._peek(), TokenType.Keyword, 'range'):
                 return []
             else:
@@ -1243,7 +1243,7 @@ class Parser:
 
     def _parse_expr_switch_cond(self) -> Optional[Expression]:
         if not self._should(self._peek(), TokenType.Operator, '{'):
-            with self._Control(self):
+            with self.Control(self):
                 return self._parse_expression()
 
     def _parse_expr_switch_case(self, case: SwitchCase):
@@ -1263,7 +1263,7 @@ class Parser:
         return None
 
     def _parse_type_switch_cond(self, ret: TypeSwitch):
-        with self._Control(self):
+        with self.Control(self):
             ret.type = self._parse_primary()
 
     def _parse_type_switch_case(self, case: TypeSwitchCase):
@@ -1548,7 +1548,7 @@ class Parser:
         ret.signature = self._parse_signature()
 
         # function body should be parsed within nested scope
-        with self._Nested(self):
+        with self.Nested(self):
             ret.body = self._parse_compound_statement()
             return ret
 
@@ -1557,7 +1557,7 @@ class Parser:
         ret.type = self._parse_literal_type()
 
         # parse the composite value within nested scope
-        with self._Nested(self):
+        with self.Nested(self):
             ret.value = self._parse_composite_val()
             return ret
 
@@ -1617,7 +1617,7 @@ class Parser:
 
         # if ':' encountered, it must be a slice, otherwise assume it's an index
         if not self._should(self._peek(), TokenType.Operator, ':'):
-            with self._Nested(self):
+            with self.Nested(self):
                 idx = Index(tk)
                 idx.expr = ret.pos = self._parse_expression()
 
@@ -1632,7 +1632,7 @@ class Parser:
             ret.len = None
 
             # it might be an empty expression
-            with self._Nested(self):
+            with self.Nested(self):
                 if not self._is_ops(ESLICE_OPERATORS):
                     ret.len = self._parse_expression()
 
@@ -1642,7 +1642,7 @@ class Parser:
             ret.cap = None
 
             # it might be an empty expression
-            with self._Nested(self):
+            with self.Nested(self):
                 if not self._should(self._peek(), TokenType.Operator, ']'):
                     ret.cap = self._parse_expression()
 
@@ -1686,7 +1686,7 @@ class Parser:
         #
         # so we just simply parse them as `type specifier`, the type inferrer
         # will take care of this situation
-        with self._Nested(self):
+        with self.Nested(self):
             if self._is_argument_type():
                 ret.args.append(self._parse_type())
             else:
@@ -1711,7 +1711,7 @@ class Parser:
         return ret
 
     def _parse_argument_item(self, tk: Token, args: List[Expression]):
-        with self._Nested(self):
+        with self.Nested(self):
             if not self._should(tk, TokenType.Operator, ')'):
                 args.append(self._parse_expression())
 
@@ -1748,7 +1748,7 @@ class Parser:
         return ret
 
     def _parse_function_body(self) -> Optional[CompoundStatement]:
-        with self._Nested(self):
+        with self.Nested(self):
             if not self._should(self._peek(), TokenType.Operator, '{'):
                 return None
             else:

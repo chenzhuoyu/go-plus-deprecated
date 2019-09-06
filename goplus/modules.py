@@ -4,11 +4,14 @@ import os
 import re
 import semver
 import datetime
+import operator
+import itertools
 
 from typing import Dict
 from typing import List
 from typing import Tuple
 from typing import Optional
+from typing import Iterable
 
 _HASH_SHA1   = re.compile(r'[0-9a-f]{40}')
 _CHAR_ESCAPE = {ord(c): '!' + c.lower() for c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'}
@@ -23,7 +26,7 @@ class Module:
         self.name = ''
         self.mods = {}
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return '<Module %s>' % repr(self.name)
 
 class Reader:
@@ -148,56 +151,110 @@ class Reader:
         return ret
 
 class Resolver:
-    paths: List[str]
+    proj   : str
+    root   : str
+    paths  : List[str]
+    module : Optional[Module]
 
-    def __init__(self, paths: List[str]):
-        self.paths = paths
+    def __init__(self, proj: str, root: str, paths: List[str], module: Optional[Module] = None):
+        self.proj   = proj
+        self.root   = root
+        self.paths  = paths
+        self.module = module
 
-    def _next(self, module: Optional[Module], name: str, root: str) -> Optional[Tuple[str, str]]:
-        trace = root
-        parts = name.split(os.sep)
-        parts = list(filter(None, parts))
+    def _try_sys(self, name: str) -> Iterable[Tuple[str, str]]:
+        root = os.path.join(self.root, 'src')
+        path = os.path.join(root, name)
 
-        # check for modules
-        if module and (name in module.mods):
-            fname = name.translate(_CHAR_ESCAPE)
-            fpath = os.path.join(root, '%s@v%s' % (fname, module.mods[name]))
+        # check for system packages
+        if os.path.isdir(path):
+            yield root, path
 
-            # check for modded package
-            if not os.path.isdir(fpath):
-                return None
-            else:
-                return root, fpath
+    def _try_source(self, name: str) -> Iterable[Tuple[str, str]]:
+        for path in self.paths:
+            root = os.path.join(path, 'src')
+            path = os.path.join(root, name)
 
-        # traverse each leve
-        while parts:
-            dirs = []
-            found = False
+            # check for source packages
+            if os.path.isdir(path):
+                yield root, path
 
-            # scan the directory
-            for item in os.listdir(trace):
-                names = item.split('@')
-                fpath = os.path.join(trace, item)
+    def _try_module(self, name: str) -> Iterable[Tuple[str, str]]:
+        if self.module and name in self.module.mods:
+            for path in self.paths:
+                root = os.path.join(path, 'pkg', 'mod')
+                path = os.path.join(root, '%s@v%s' % (
+                    name.translate(_CHAR_ESCAPE),
+                    self.module.mods[name],
+                ))
 
-                # found one match
-                if os.path.isdir(fpath):
-                    if parts[0] == names[0].translate(_CHAR_ESCAPE):
-                        found = True
-                        dirs.append((fpath, '@'.join(names[1:])))
+                # check for modded packages
+                if not os.path.isdir(path):
+                    yield root, path
 
-            # nothing matches
-            if not found:
-                return None
+    def _try_vendor(self, name: str) -> Iterable[Tuple[str, str]]:
+        if not self.module:
+            root = os.path.join(self.proj, 'vendor')
+            path = os.path.join(root, name)
 
-            # FIXME: compare versions
-            trace = dirs[0][0]
-            parts = parts[1:]
+            # check for vendored packages
+            if os.path.isdir(path):
+                yield root, path
 
-        # all done
-        return root, trace
+    def _try_matching(self, name: str) -> Iterable[Tuple[str, str]]:
+        if self.module:
+            for path in self.paths:
+                root = os.path.join(path, 'pkg', 'mod')
+                path = root
 
-    def resolve(self, module: Optional[Module], name: str) -> Tuple[Optional[str], Optional[str]]:
-        return next(filter(None, (
-            self._next(module, name, path)
-            for path in self.paths
-        )), (None, None))
+                # traverse each level
+                for part in filter(None, name.split(os.sep)):
+                    dirs = []
+                    found = False
+
+                    # scan the directory
+                    for item in os.listdir(path):
+                        names = item.split('@')
+                        fpath = os.path.join(path, item)
+
+                        # match directory names, with file name translation
+                        if os.path.isdir(fpath):
+                            if names[0] == part.translate(_CHAR_ESCAPE):
+                                found = True
+                                dirs.append((fpath, '@'.join(names[1:])))
+
+                    # nothing matches
+                    if not found:
+                        break
+
+                    # find the package that doesn't have a
+                    # version number, otherwise get the newest version
+                    for fpath, version in dirs:
+                        if not version:
+                            path = fpath
+                            break
+                    else:
+                        dirs.sort(key = operator.itemgetter(1), reverse = True)
+                        path = dirs[0][0]
+
+                # found the required package
+                else:
+                    yield root, path
+
+    Result = Tuple[
+        Optional[str],
+        Optional[str],
+    ]
+
+    def resolve(self, name: str) -> Result:
+        return next(itertools.chain(
+            self._try_sys(name),
+            self._try_source(name),
+            self._try_module(name),
+            self._try_vendor(name),
+            self._try_matching(name),
+        ), (None, None))
+
+    @classmethod
+    def lookup(cls, name: str, proj: str, root: str, paths: List[str], module: Optional[Module] = None) -> Result:
+        return cls(proj, root, paths, module).resolve(name)
