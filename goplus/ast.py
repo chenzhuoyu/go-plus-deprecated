@@ -39,6 +39,12 @@ class Node(metaclass = StrictFields):
         self.col = tk.col
         self.file = tk.file
 
+        # noinspection PyUnresolvedReferences
+        # special case for the `vt` attribute, the `__attr__` is a set of
+        # all class attr names, it is added by the `StrictFields` metaclass
+        if 'vt' not in self.__attrs__:
+            self.vt = None
+
     def __repr__(self) -> str:
         return json.dumps(self._build(set()), indent = 4)
 

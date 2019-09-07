@@ -92,7 +92,7 @@ def _make_init(asm: Assembler, name: str, vtype: Any, real: Any) -> Optional[Cal
     else:
         return None
 
-def _build_attrs(ns: Dict[str, Any], bases: Tuple[Type], fields: Dict[str, Any], noinit: Set[str]) -> Dict[str, Any]:
+def _build_attrs(attrs: Dict[str, Any], bases: Tuple[Type], fields: Dict[str, Any], noinit: Set[str]) -> Dict[str, Any]:
     asm = Assembler('<compiled>')
     asm.instrs.flags = _VA | _KW
     asm.instrs.argcount = 1
@@ -104,14 +104,17 @@ def _build_attrs(ns: Dict[str, Any], bases: Tuple[Type], fields: Dict[str, Any],
             init = _make_init(asm, name, vtype, _real_type(vtype))
             init and init()
 
+    # set slots and attributes
+    attrs['__attrs__'] = set(sorted(attrs.keys()))
+    attrs['__slots__'] = tuple(sorted(fields.keys()))
+
     # create a new `__init__` only when fields present
     if not asm.instrs:
-        ns['__slots__'] = tuple(sorted(fields.keys()))
-        return ns
+        return attrs
 
     # check for original `__init__` function
-    if '__init__' in ns:
-        orig_init = ns['__init__']
+    if '__init__' in attrs:
+        orig_init = attrs['__init__']
     elif bases:
         orig_init = bases[0].__init__
     else:
@@ -129,7 +132,6 @@ def _build_attrs(ns: Dict[str, Any], bases: Tuple[Type], fields: Dict[str, Any],
         asm.CALL_FUNCTION_VAR_KW(1)
         asm.RETURN_VALUE()
 
-    # create a new `__init__` function and `__slots__`
-    ns['__init__'] = _make_func(asm.assemble())
-    ns['__slots__'] = tuple(sorted(fields.keys()))
-    return ns
+    # create a new `__init__` function
+    attrs['__init__'] = _make_func(asm.assemble())
+    return attrs
