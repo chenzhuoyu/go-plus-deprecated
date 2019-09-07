@@ -477,8 +477,13 @@ class Inferrer:
 
             # infer dependency recursively
             with Trace(trace, name):
-                cache[path] = None
-                cache[path] = self._infer_package(False, imp.path, trace, cache, module)
+                cache[path] = self._infer_package(
+                    main   = False,
+                    path   = imp.path,
+                    trace  = trace,
+                    cache  = cache,
+                    module = module,
+                )
 
         # TODO: infer everything else
 

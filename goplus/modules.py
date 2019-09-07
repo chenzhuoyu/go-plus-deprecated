@@ -170,12 +170,12 @@ class Resolver:
         if os.path.isdir(path):
             yield root, path
 
-    def _try_source(self, name: str) -> Iterable[Tuple[str, str]]:
-        for path in self.paths:
-            root = os.path.join(path, 'src')
+    def _try_vendor(self, name: str) -> Iterable[Tuple[str, str]]:
+        if not self.module:
+            root = os.path.join(self.proj, 'vendor')
             path = os.path.join(root, name)
 
-            # check for source packages
+            # check for vendored packages
             if os.path.isdir(path):
                 yield root, path
 
@@ -189,57 +189,56 @@ class Resolver:
                 ))
 
                 # check for modded packages
-                if not os.path.isdir(path):
+                if os.path.isdir(path):
                     yield root, path
 
-    def _try_vendor(self, name: str) -> Iterable[Tuple[str, str]]:
-        if not self.module:
-            root = os.path.join(self.proj, 'vendor')
+    def _try_sibling(self, name: str) -> Iterable[Tuple[str, str]]:
+        for path in self.paths:
+            root = os.path.join(path, 'src')
             path = os.path.join(root, name)
 
-            # check for vendored packages
+            # check for source packages
             if os.path.isdir(path):
                 yield root, path
 
     def _try_matching(self, name: str) -> Iterable[Tuple[str, str]]:
-        if self.module:
-            for path in self.paths:
-                root = os.path.join(path, 'pkg', 'mod')
-                path = root
+        for path in self.paths:
+            root = os.path.join(path, 'pkg', 'mod')
+            path = root
 
-                # traverse each level
-                for part in filter(None, name.split(os.sep)):
-                    dirs = []
-                    found = False
+            # traverse each level
+            for part in filter(None, name.split(os.sep)):
+                dirs = []
+                found = False
 
-                    # scan the directory
-                    for item in os.listdir(path):
-                        names = item.split('@')
-                        fpath = os.path.join(path, item)
+                # scan the directory
+                for item in os.listdir(path):
+                    names = item.split('@')
+                    fpath = os.path.join(path, item)
 
-                        # match directory names, with file name translation
-                        if os.path.isdir(fpath):
-                            if names[0] == part.translate(_CHAR_ESCAPE):
-                                found = True
-                                dirs.append((fpath, '@'.join(names[1:])))
+                    # match directory names, with file name translation
+                    if os.path.isdir(fpath):
+                        if names[0] == part.translate(_CHAR_ESCAPE):
+                            found = True
+                            dirs.append((fpath, '@'.join(names[1:])))
 
-                    # nothing matches
-                    if not found:
+                # nothing matches
+                if not found:
+                    break
+
+                # find the package that doesn't have a
+                # version number, otherwise get the newest version
+                for fpath, version in dirs:
+                    if not version:
+                        path = fpath
                         break
-
-                    # find the package that doesn't have a
-                    # version number, otherwise get the newest version
-                    for fpath, version in dirs:
-                        if not version:
-                            path = fpath
-                            break
-                    else:
-                        dirs.sort(key = operator.itemgetter(1), reverse = True)
-                        path = dirs[0][0]
-
-                # found the required package
                 else:
-                    yield root, path
+                    dirs.sort(key = operator.itemgetter(1), reverse = True)
+                    path = dirs[0][0]
+
+            # found the required package
+            else:
+                yield root, path
 
     Result = Tuple[
         Optional[str],
@@ -249,9 +248,9 @@ class Resolver:
     def resolve(self, name: str) -> Result:
         return next(itertools.chain(
             self._try_sys(name),
-            self._try_source(name),
-            self._try_module(name),
             self._try_vendor(name),
+            self._try_module(name),
+            self._try_sibling(name),
             self._try_matching(name),
         ), (None, None))
 
