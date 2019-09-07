@@ -40,13 +40,25 @@ else:
         except AttributeError:
             return vtype
 
+# assembler for the function factory
+_asm = Assembler('<wrapper>')
+_asm.instrs.argcount = 1
+_asm.instrs.argnames = ['code']
+
+# use the `MAKE_FUNCTION` bytecode to build a function
+_asm.LOAD_FAST('code')
+_asm.LOAD_CONST('__init__')
+_asm.MAKE_FUNCTION(0)
+_asm.RETURN_VALUE()
+
+# assemble the factory
+_fac = _asm.assemble()
+del _asm
+
 def _make_func(co: CodeType) -> FunctionType:
-    asm = Assembler('<wrapper>')
-    asm.LOAD_CONST(co)
-    asm.LOAD_CONST('__init__')
-    asm.MAKE_FUNCTION(0)
-    asm.RETURN_VALUE()
-    return eval(asm.assemble())
+    return eval(_fac, {}, {
+        'code': co,
+    })
 
 def _make_init(asm: Assembler, name: str, vtype: Any, real: Any) -> Optional[Callable[[], Any]]:
     if real is bool:

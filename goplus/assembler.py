@@ -1,14 +1,11 @@
 # -*- coding: utf-8 -*-
 
+import types
 import opcode
 import platform
 
-from types import CodeType
-from typing import Set
-
 from bytecode.instr import Instr
 from bytecode.instr import Label
-from bytecode.instr import Compare
 from bytecode.bytecode import Bytecode
 
 from bytecode.peephole_opt import ControlFlowGraph
@@ -18,24 +15,10 @@ if platform.python_implementation() == 'PyPy':
     from .opstack import stack_effect
     __import__('dis').stack_effect = stack_effect
 
-_COMPARE_MAP = {
-    '=='  : Compare.EQ,
-    '>'   : Compare.GT,
-    '<'   : Compare.LT,
-    '!='  : Compare.NE,
-    '>='  : Compare.GE,
-    '<='  : Compare.LE,
-    'exc' : Compare.EXC_MATCH,
-}
-
 class Assembler:
-    names  : Set[str]
-    locals : Set[str]
-    instrs : Bytecode
+    instrs: Bytecode
 
     def __init__(self, name: str):
-        self.names = set()
-        self.locals = set()
         self.instrs = Bytecode()
         self.instrs.name = name
 
@@ -48,20 +31,10 @@ class Assembler:
         else:
             return Instruction(item, self.instrs)
 
-    def store(self, name: str):
-        self.locals.add(name)
-        return self.STORE_FAST(name)
-
     def label(self) -> 'Location':
         return Location(self.instrs)
 
-    def compare(self, op: str):
-        if op not in _COMPARE_MAP:
-            raise ValueError('Invalid comparison operator: %s' % repr(op))
-        else:
-            return self.COMPARE_OP(_COMPARE_MAP[op])
-
-    def assemble(self) -> CodeType:
+    def assemble(self) -> types.CodeType:
         cfg = ControlFlowGraph.from_bytecode(self.instrs)
         PeepholeOptimizer().optimize_cfg(cfg)
         return cfg.to_bytecode().to_code()
