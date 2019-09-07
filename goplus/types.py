@@ -108,7 +108,6 @@ class FuncType(Type):
     flags : FunctionOptions
 
     def __init__(self):
-        self.var = False
         self.flags = FunctionOptions(0)
         super().__init__(Kind.Func)
 
@@ -201,12 +200,11 @@ class MetaType(Type):
         super().__init__(Kind.Type)
 
 class MetaPackage(Type):
-    path    : str
-    done    : bool
-    vars    : Dict[str, Type]
-    funcs   : Dict[str, FuncType]
-    types   : Dict[str, MetaType]
-    consts  : Dict[str, Type]
+    path   : str
+    vars   : Dict[str, Type]
+    funcs  : Dict[str, FuncType]
+    types  : Dict[str, MetaType]
+    consts : Dict[str, Type]
 
     def __init__(self, path: str):
         self.path = path
