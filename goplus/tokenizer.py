@@ -360,13 +360,13 @@ class Tokenizer:
             # line comments
             if self._next_char() == '/':
                 if not self._check_sol() or not self._check_prefix('go:', 'line '):
-                    raise _GotComments(self._skip_eol() + '\n')
+                    raise _GotComments(self._skip_eol())
                 else:
                     self._handle_directives(self._skip_eol(), block = False)
                     continue
 
             # locate the comment end
-            pos = self.state.pos + 1
+            pos = self.state.pos
             end = self.src.find('*/', pos)
             ret = self._read_fast(pos, end, 2)
 
@@ -384,17 +384,16 @@ class Tokenizer:
 
     def _read_fast(self, pos: int, end: int, tail: int) -> str:
         ret = self.src[pos:end]
-        nnl = ret.count('\n')
+        nnl, end = ret.count('\n'), end + tail
 
         # adjust column based on new-line count
         if nnl > 0:
-            self.state.col = len(ret) - ret.rfind('\n') - 1
-        else:
-            self.state.col += len(ret) + tail
+            self.state.col = -ret.rfind('\n') - 1
 
-        # adjust state position and row counter
-        self.state.pos = end + tail
+        # adjust tokenizer state
+        self.state.pos = end
         self.state.row += nnl
+        self.state.col += end - pos
         return ret
 
     def _read_until(self, quote: str, delim: Optional[str] = None) -> Tuple[str, bytes]:
@@ -491,7 +490,7 @@ class Tokenizer:
         elif cdir.startswith('line '):
             self._handle_directives_line(cdir, cdir[5:].rsplit(':', 2), block)
         elif cdir.startswith('go:linkname '):
-            self._handle_directives_linkname(cdir, list(filter(None, cdir[12:].split(' '))), block)
+            self._handle_directives_linkname(cdir, list(filter(None, cdir[12:].split(' '))))
 
     def _handle_directives_line(self, cdir: str, args: List[str], block: bool):
         try:
@@ -505,7 +504,7 @@ class Tokenizer:
 
         # row number must be greater than 0
         if row <= 0:
-            raise _GotComments(cdir + ('' if block else '\n'))
+            raise _GotComments(cdir)
 
         # adjust the row number
         st = self.state
@@ -522,9 +521,9 @@ class Tokenizer:
         if name:
             self.file = name
 
-    def _handle_directives_linkname(self, cdir: str, args: List[str], block: bool):
+    def _handle_directives_linkname(self, cdir: str, args: List[str]):
         if len(args) != 2:
-            raise _GotComments(cdir + ('' if block else '\n'))
+            raise _GotComments(cdir)
         else:
             ret = LinkNameDirective()
             ret.name, ret.link = args

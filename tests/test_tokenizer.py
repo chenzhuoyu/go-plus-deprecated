@@ -188,6 +188,7 @@ string_err_vals = (
     'invalid Unicode code point',
 )
 
+# noinspection DuplicatedCode
 class TestTokenizer(unittest.TestCase):
     def verify(self, src: str, kind: TokenType, value: TokenValue = None, nonl: bool = True):
         tk = Tokenizer(src, '<test>')
@@ -272,6 +273,78 @@ class TestTokenizer(unittest.TestCase):
         self.assertEqual(TokenType.LF, token.kind)
         token = tk.next()
         self.assertEqual(TokenType.End, token.kind)
+
+    def _run_test(self, src, seq):
+        tk = Tokenizer(src, '<test>')
+        while seq and not tk.is_eof:
+            token = tk.next()
+            kind, value, row, col, srow, scol = seq[0]
+            self.assertEqual(kind, token.kind, repr(seq[0]))
+            self.assertEqual(value, token.value, repr(seq[0]))
+            self.assertEqual(row, tk.save.row, repr(seq[0]))
+            self.assertEqual(col, tk.save.col, repr(seq[0]))
+            self.assertEqual(srow, tk.state.row, repr(seq[0]))
+            self.assertEqual(scol, tk.state.col, repr(seq[0]))
+            self.assertEqual(row, token.row, repr(seq[0]))
+            self.assertEqual(col, token.col, repr(seq[0]))
+            seq = seq[1:]
+        self.assertTrue(not seq, 'not seq')
+        self.assertTrue(tk.is_eof, 'tk.is_eof')
+
+    def test_line_number(self):
+        src = r"""`hello, world` `hello,
+world`
+// this is a test
+/* this is a
+block comment */
+"""
+        self._run_test(src, [
+            (TokenType.String   , b'hello, world'               , 0,  0, 0, 14),
+            (TokenType.String   , b'hello,\nworld'              , 0, 15, 1,  6),
+            (TokenType.LF       , None                          , 1,  6, 2,  0),
+            (TokenType.Comments , ' this is a test'             , 2,  0, 2, 17),
+            (TokenType.LF       , None                          , 2, 17, 3,  0),
+            (TokenType.Comments , ' this is a\nblock comment '  , 3,  0, 4, 16),
+            (TokenType.LF       , None                          , 4, 16, 5,  0),
+        ])
+
+    def test_line_number_by_source(self):
+        src = r"""package parser
+
+import (
+    `io`
+    `net/url`
+    `reflect`
+
+    `code.example.org/chenzhuoyu/infra-kernels/utils`
+
+    _ `git.example.org/ee/people/infra/gateway/biz/dispatch/service`
+)
+"""
+        self._run_test(src, [
+            (TokenType.Keyword  , 'package'                                                         ,  0,  0,  0,  7),
+            (TokenType.Name     , 'parser'                                                          ,  0,  8,  0, 14),
+            (TokenType.LF       , None                                                              ,  0, 14,  1,  0),
+            (TokenType.LF       , None                                                              ,  1,  0,  2,  0),
+            (TokenType.Keyword  , 'import'                                                          ,  2,  0,  2,  6),
+            (TokenType.Operator , '('                                                               ,  2,  7,  2,  8),
+            (TokenType.LF       , None                                                              ,  2,  8,  3,  0),
+            (TokenType.String   , b'io'                                                             ,  3,  4,  3,  8),
+            (TokenType.LF       , None                                                              ,  3,  8,  4,  0),
+            (TokenType.String   , b'net/url'                                                        ,  4,  4,  4, 13),
+            (TokenType.LF       , None                                                              ,  4, 13,  5,  0),
+            (TokenType.String   , b'reflect'                                                        ,  5,  4,  5, 13),
+            (TokenType.LF       , None                                                              ,  5, 13,  6,  0),
+            (TokenType.LF       , None                                                              ,  6,  0,  7,  0),
+            (TokenType.String   , b'code.example.org/chenzhuoyu/infra-kernels/utils'                ,  7,  4,  7, 53),
+            (TokenType.LF       , None                                                              ,  7, 53,  8,  0),
+            (TokenType.LF       , None                                                              ,  8,  0,  9,  0),
+            (TokenType.Name     , '_'                                                               ,  9,  4,  9,  5),
+            (TokenType.String   , b'git.example.org/ee/people/infra/gateway/biz/dispatch/service'   ,  9,  6,  9, 68),
+            (TokenType.LF       , None                                                              ,  9, 68, 10,  0),
+            (TokenType.Operator , ')'                                                               , 10,  0, 10,  1),
+            (TokenType.LF       , None                                                              , 10,  1, 11,  0),
+        ])
 
 if __name__ == '__main__':
     unittest.main()

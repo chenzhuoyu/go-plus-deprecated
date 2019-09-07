@@ -295,10 +295,25 @@ func baz() {}
 
 class TestParser(unittest.TestCase):
     def test_import(self):
-        print(Parser(Tokenizer(_import_src, 'test.go')).parse())
+        Parser(Tokenizer(_import_src, 'test.go')).parse()
 
     def test_const(self):
-        print(Parser(Tokenizer(_const_src, 'test.go')).parse())
+        Parser(Tokenizer(_const_src, 'test.go')).parse()
+
+    def test_line_number(self):
+        src = r"""package parser
+
+import (
+    `io`
+    `net/url`
+    `reflect`
+
+    `code.example.org/chenzhuoyu/infra-kernels/utils`
+
+    _ `git.example.org/ee/people/infra/gateway/biz/dispatch/service`
+)
+"""
+        print(Parser(Tokenizer(src, 'test.go')).parse())
 
 if __name__ == '__main__':
     unittest.main()
