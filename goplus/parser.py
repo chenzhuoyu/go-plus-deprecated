@@ -1111,13 +1111,14 @@ class Parser:
         tk = self._next()
         self._require(tk, TokenType.Operator, ';')
 
-        # parse the post statement if any
-        if not self._should(self._peek(), TokenType.Operator, '{'):
-            with self.Control(self):
-                ret.post = self._parse_simple_statement()
+        # check for post statements
+        if self._should(self._peek(), TokenType.Operator, '{'):
+            return ret
 
-        # all done
-        return ret
+        # parse the post statement
+        with self.Control(self):
+            ret.post = self._parse_simple_statement()
+            return ret
 
     def _parse_for_range(self, tk: Token) -> ForRange:
         ret = ForRange(tk)
