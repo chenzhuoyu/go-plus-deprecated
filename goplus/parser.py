@@ -1871,6 +1871,8 @@ class Parser:
     def _parse_var(self, tk: Token, ret: List[InitSpec]):
         self._parse_var_spec(tk, ret, consts = False)
 
+    ### Declaration Parsers ###
+
     def _parse_decl(self, tk: Token, ret: Package):
         if tk.value == 'func':
             self._parse_function(ret.funcs)
@@ -1883,18 +1885,17 @@ class Parser:
         else:
             raise self._error(tk, 'unexpected keyword %s' % repr(tk.value))
 
-    def _parse_package(self, ret: Package):
-        ret.name = self._parse_name()
-
     def parse(self) -> Package:
         tk = self._next()
         tk = self._require(tk, TokenType.Keyword, 'package')
 
         # parse the package name
         ret = Package(tk)
-        self._parse_package(ret)
-        self._delimiter(';')
+        ret.name = self._parse_name()
+
+        # require a delimiter after package name
         self.block = None
+        self._delimiter(';')
 
         # imports go before other declarations
         while self._should(self._peek(), TokenType.Keyword, 'import'):

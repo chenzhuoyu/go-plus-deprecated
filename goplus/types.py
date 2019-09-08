@@ -2,15 +2,16 @@
 
 from enum import IntEnum
 
-from typing import Dict
 from typing import List
 from typing import Optional
+from typing import FrozenSet
 
 from .utils import StrictFields
 from .flags import ChannelOptions
 from .flags import FunctionOptions
 
 class Kind(IntEnum):
+    Invalid       = 0
     Bool          = 1
     Int           = 2
     Int8          = 3
@@ -37,69 +38,57 @@ class Kind(IntEnum):
     String        = 24
     Struct        = 25
     UnsafePointer = 26
-    Type          = 254
-    Package       = 255
 
 class Type(metaclass = StrictFields):
-    kind: Kind
+    kind  : Kind
+    valid : bool
 
-    ### Standard Types ###
+    __noinit__ = {
+        'kind',
+        'valid',
+    }
 
-    Bool           : 'Type'
-    Int            : 'Type'
-    Int8           : 'Type'
-    Int16          : 'Type'
-    Int32          : 'Type'
-    Int64          : 'Type'
-    Uint           : 'Type'
-    Uint8          : 'Type'
-    Uint16         : 'Type'
-    Uint32         : 'Type'
-    Uint64         : 'Type'
-    Uintptr        : 'Type'
-    Float32        : 'Type'
-    Float64        : 'Type'
-    Complex64      : 'Type'
-    Complex128     : 'Type'
-    String         : 'Type'
-    UnsafePointer  : 'Type'
-
-    ### Untyped Types for Constants ###
-
-    UntypedInt     : 'UntypedType'
-    UntypedBool    : 'UntypedType'
-    UntypedRune    : 'UntypedType'
-    UntypedFloat   : 'UntypedType'
-    UntypedString  : 'UntypedType'
-    UntypedComplex : 'UntypedType'
-
-    def __init__(self, kind: Kind):
+    def __init__(self, kind: Kind, valid: bool = True):
         self.kind = kind
+        self.valid = valid
 
-    def __str__(self) -> str:
-        return self.kind.name.lower()
+    def __repr__(self) -> str:
+        return self._to_repr(frozenset())
+
+    def _to_repr(self, _path: FrozenSet['Type']) -> str:
+        if self in _path:
+            return '...'
+        else:
+            return self._get_repr(_path | {self})
+
+    def _get_repr(self, _path: FrozenSet['Type']) -> str:
+        return '%s@%#x' % (self.kind.name.lower(), id(self))
 
 class PtrType(Type):
-    elem: Type
+    elem: Optional[Type]
 
-    def __init__(self, elem: Type):
+    def __init__(self, elem: Optional[Type] = None):
         self.elem = elem
         super().__init__(Kind.Ptr)
 
-    def __str__(self) -> str:
-        return '*' + str(self.elem)
+    def _get_repr(self, _path: FrozenSet[Type]) -> str:
+        return '(*%s)@%#x' % (self.elem._to_repr(_path), id(self))
 
 class MapType(Type):
-    key  : Type
-    elem : Type
+    key  : Optional[Type]
+    elem : Optional[Type]
 
-    def __init__(self, key: Type, elem: Type):
+    def __init__(self, key: Optional[Type] = None, elem: Optional[Type] = None):
         self.key = key
         self.elem = elem
         super().__init__(Kind.Map)
 
-    def __str__(self) -> str:
-        return 'map[%s]%s' % (self.key, self.elem)
+    def _get_repr(self, _path: FrozenSet[Type]) -> str:
+        return '(map[%s]%s)@%#x' % (
+            self.key._to_repr(_path),
+            self.elem._to_repr(_path),
+            id(self),
+        )
 
 class FuncType(Type):
     var   : bool
@@ -113,56 +102,68 @@ class FuncType(Type):
 
 class ChanType(Type):
     dir  : ChannelOptions
-    elem : Type
+    elem : Optional[Type]
 
-    def __init__(self, elem: Type):
+    __chan_type__ = {
+        ChannelOptions.BOTH : 'chan',
+        ChannelOptions.SEND : 'chan <-',
+        ChannelOptions.RECV : '<- chan',
+    }
+
+    def __init__(self, elem: Optional[Type] = None):
         self.dir = ChannelOptions.BOTH
         self.elem = elem
         super().__init__(Kind.Chan)
 
-    def __str__(self) -> str:
-        if self.dir == ChannelOptions.BOTH:
-            return 'chan %s' % self.elem
-        elif self.dir == ChannelOptions.SEND:
-            return 'chan <- %s' % self.elem
-        else:
-            return '<- chan %s' % self.elem
+    def _get_repr(self, _path: FrozenSet[Type]) -> str:
+        return '(%s %s)@%#x' % (
+            self.__chan_type__[self.dir],
+            self.elem._to_repr(_path),
+            id(self),
+        )
 
 class ArrayType(Type):
     len  : Optional[int]
-    elem : Type
+    elem : Optional[Type]
 
-    def __init__(self, elem: Type):
+    def __init__(self, elem: Optional[Type] = None):
         self.elem = elem
-        super().__init__(Kind.Array)
+        super().__init__(Kind.Array, False)
 
-    def __str__(self) -> str:
+    def _get_repr(self, _path: FrozenSet[Type]) -> str:
         if self.len is None:
-            return '[...]%s' % self.elem
+            return '([?]%r)@%#x' % (self.elem._to_repr(_path), id(self))
         else:
-            return '[%d]%s' % (self.len, self.elem)
+            return '([%d]%r)@%#x' % (self.len, self.elem._to_repr(_path), id(self))
 
 class SliceType(Type):
-    elem: Type
+    elem: Optional[Type]
 
-    def __init__(self, elem: Type):
+    def __init__(self, elem: Optional[Type] = None):
         self.elem = elem
         super().__init__(Kind.Slice)
 
-    def __str__(self) -> str:
-        return '[]%s' % self.elem
+    def _get_repr(self, _path: FrozenSet[Type]) -> str:
+        return '([]%s)@%#x' % (self.elem._to_repr(_path), id(self))
 
 class StructType(Type):
-    fields: List['StructField']
+    size   : int
+    align  : int
+    fields : List['StructField']
 
     def __init__(self):
-        super().__init__(Kind.Struct)
+        self.size = 0
+        self.align = 0
+        super().__init__(Kind.Struct, False)
 
 class StructField(metaclass = StrictFields):
-    name: str
-    anon: bool
-    type: Type
-    tags: Optional[str]
+    name     : str
+    type     : Type
+    tags     : Optional[str]
+    size     : int
+    align    : int
+    offset   : int
+    embedded : bool
 
 class InterfaceType(Type):
     methods: List['InterfaceMethod']
@@ -178,60 +179,47 @@ class InterfaceMethod(metaclass = StrictFields):
         self.name = name
         self.type = mtype
 
+class NamedType(Type):
+    name: str
+    type: Optional[Type]
+
+    def __init__(self, name: str, rtype: Optional[Type] = None):
+        self.name = name
+        self.type = rtype
+        super().__init__(Kind.Invalid, False)
+
+    def _get_repr(self, _path: FrozenSet[Type]) -> str:
+        return 'named<%s: %r>@%#x' % (self.name, self.type._to_repr(_path), id(self))
+
 class UntypedType(Type):
-    def __str__(self) -> str:
-        return 'untyped<%s>' % super().__str__()
+    def _get_repr(self, _path: FrozenSet[Type]) -> str:
+        return 'untyped<%s>' % super()._to_repr(_path)
 
-class InheritedType(Type):
-    type: Type
+class Types:
+    Bool           = Type(Kind.Bool)
+    Int            = Type(Kind.Int)
+    Int8           = Type(Kind.Int8)
+    Int16          = Type(Kind.Int16)
+    Int32          = Type(Kind.Int32)
+    Int64          = Type(Kind.Int64)
+    Uint           = Type(Kind.Uint)
+    Uint8          = Type(Kind.Uint8)
+    Uint16         = Type(Kind.Uint16)
+    Uint32         = Type(Kind.Uint32)
+    Uint64         = Type(Kind.Uint64)
+    Uintptr        = Type(Kind.Uintptr)
+    Float32        = Type(Kind.Float32)
+    Float64        = Type(Kind.Float64)
+    Complex64      = Type(Kind.Complex64)
+    Complex128     = Type(Kind.Complex128)
+    String         = Type(Kind.String)
+    UnsafePointer  = Type(Kind.UnsafePointer)
 
-    def __init__(self, rtype: Type):
-        self.type = rtype
-        super().__init__(rtype.kind)
+    ### Untyped Types for Constants ###
 
-    def __str__(self) -> str:
-        return 'inherited<%s>' % str(self.type)
-
-class MetaType(Type):
-    type: Type
-
-    def __init__(self, rtype: Type):
-        self.type = rtype
-        super().__init__(Kind.Type)
-
-class MetaPackage(Type):
-    path   : str
-    vars   : Dict[str, Type]
-    funcs  : Dict[str, FuncType]
-    types  : Dict[str, MetaType]
-    consts : Dict[str, Type]
-
-    def __init__(self, path: str):
-        self.path = path
-        super().__init__(Kind.Package)
-
-Type.Bool           = Type(Kind.Bool)
-Type.Int            = Type(Kind.Int)
-Type.Int8           = Type(Kind.Int8)
-Type.Int16          = Type(Kind.Int16)
-Type.Int32          = Type(Kind.Int32)
-Type.Int64          = Type(Kind.Int64)
-Type.Uint           = Type(Kind.Uint)
-Type.Uint8          = Type(Kind.Uint8)
-Type.Uint16         = Type(Kind.Uint16)
-Type.Uint32         = Type(Kind.Uint32)
-Type.Uint64         = Type(Kind.Uint64)
-Type.Uintptr        = Type(Kind.Uintptr)
-Type.Float32        = Type(Kind.Float32)
-Type.Float64        = Type(Kind.Float64)
-Type.Complex64      = Type(Kind.Complex64)
-Type.Complex128     = Type(Kind.Complex128)
-Type.String         = Type(Kind.String)
-Type.UnsafePointer  = Type(Kind.UnsafePointer)
-
-Type.UntypedInt     = UntypedType(Kind.Int)
-Type.UntypedBool    = UntypedType(Kind.Bool)
-Type.UntypedRune    = UntypedType(Kind.Int32)
-Type.UntypedFloat   = UntypedType(Kind.Float64)
-Type.UntypedString  = UntypedType(Kind.String)
-Type.UntypedComplex = UntypedType(Kind.Complex128)
+    UntypedInt     = UntypedType(Kind.Int)
+    UntypedBool    = UntypedType(Kind.Bool)
+    UntypedRune    = UntypedType(Kind.Int32)
+    UntypedFloat   = UntypedType(Kind.Float64)
+    UntypedString  = UntypedType(Kind.String)
+    UntypedComplex = UntypedType(Kind.Complex128)

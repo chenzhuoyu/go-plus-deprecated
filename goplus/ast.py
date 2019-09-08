@@ -11,7 +11,9 @@ from typing import Union
 from typing import Optional
 from typing import Sequence
 
-from .types import Type as Tp
+from .types import Type as T
+from .types import Types as U
+
 from .utils import StrictFields
 from .flags import ChannelOptions
 from .flags import FunctionOptions
@@ -21,7 +23,7 @@ from .tokenizer import TokenType
 from .tokenizer import TokenValue
 
 class Node(metaclass = StrictFields):
-    vt   : Optional[Tp]
+    vt   : Optional[T]
     row  : int
     col  : int
     file : str
@@ -106,26 +108,26 @@ class Value(Node):
         assert tk.kind == self.kind
 
 class Int(Value):
-    vt   = Tp.UntypedInt
+    vt   = U.UntypedInt
     kind = TokenType.Int
 
 class Name(Value):
     kind = TokenType.Name
 
 class Rune(Value):
-    vt   = Tp.UntypedRune
+    vt   = U.UntypedRune
     kind = TokenType.Rune
 
 class Float(Value):
-    vt   = Tp.UntypedFloat
+    vt   = U.UntypedFloat
     kind = TokenType.Float
 
 class String(Value):
-    vt   = Tp.UntypedString
+    vt   = U.UntypedString
     kind = TokenType.String
 
 class Complex(Value):
-    vt   = Tp.UntypedComplex
+    vt   = U.UntypedComplex
     kind = TokenType.Complex
 
 class Operator(Value):
@@ -249,14 +251,18 @@ class Composite(Node):
     type  : Optional[LiteralType]
     value : LiteralValue
 
-Operand = Union[
+Constant = Union[
     Int,
-    Name,
     Rune,
     Float,
-    Lambda,
     String,
     Complex,
+]
+
+Operand = Union[
+    Name,
+    Lambda,
+    Constant,
     Composite,
     Conversion,
     Expression,
