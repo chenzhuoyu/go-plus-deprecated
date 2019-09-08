@@ -506,7 +506,7 @@ class Parser:
         if tv != '(':
             return tv in TYPE_OPERATORS
 
-        # try match rule :: Type = '(' Type ')' .
+        # try matching rule :: Type = '(' Type ')' .
         with self.Scope(self):
             self._next()
             return self._is_probably_type()
@@ -984,7 +984,7 @@ class Parser:
                     self._delimiter(',')
                     continue
 
-            # not working, try "name1, name2, ..., nameX Type"
+            # doesn't work, try "name1, name2, ..., nameX Type"
             if vn is not False:
                 try:
                     ret.extend(self._parse_arg_list())
@@ -995,7 +995,7 @@ class Parser:
                     self._delimiter(',')
                     continue
 
-            # not working either, must be a bare type
+            # doesn't work either, it must be a bare type
             # the names must either all be present or all be absent
             if vn is True:
                 raise self._error(tk, 'parameter name expected')
@@ -1066,7 +1066,7 @@ class Parser:
         except SyntaxError:
             ret = None
 
-        # not working, it must be a 'for-loop'
+        # doesn't work, it must be a 'for-loop'
         if ret is None:
             self.load_state(st)
             ret = self._parse_for_loop(tk)
@@ -1179,7 +1179,7 @@ class Parser:
         self.load_state(st)
         ret = SelectReceive(self._peek())
 
-        # try parse as SVD
+        # try parsing as SVD
         try:
             ret.svd = True
             ret.terms = self._parse_svd()
@@ -1187,7 +1187,7 @@ class Parser:
             ret.svd = False
             self.load_state(st)
 
-        # maybe assignment, maybe it's just a simple receive
+        # maybe an assignment, or maybe it's just a simple receive
         if not ret.svd:
             try:
                 ret.terms = self._parse_expressions()
