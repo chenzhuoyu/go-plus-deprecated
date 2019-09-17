@@ -298,7 +298,7 @@ class TestParser(unittest.TestCase):
         Parser(Tokenizer(_import_src, 'test.go')).parse()
 
     def test_const(self):
-        Parser(Tokenizer(_const_src, 'test.go')).parse()
+        print(Parser(Tokenizer(_const_src, 'test.go')).parse())
 
     def test_line_number(self):
         src = r"""package parser

@@ -13,6 +13,10 @@ from .types import Type
 from .types import Types
 from .utils import StrictFields
 
+from .types import FuncType
+from .types import InterfaceType
+from .types import InterfaceMethod
+
 class SymbolKind(Enum):
     VAR     = 'var'
     FUNC    = 'func'
@@ -42,6 +46,41 @@ class Symbols:
     class Const(Symbol):   kind = SymbolKind.CONST
     class Package(Symbol): kind = SymbolKind.PACKAGE
 
+def _make_intf(methods: List[InterfaceMethod]) -> InterfaceType:
+    ret = InterfaceType()
+    ret.methods = methods
+    return ret
+
+def _make_func(args: List[Type], rets: List[Type]) -> FuncType:
+    ret = FuncType()
+    ret.args = args
+    ret.rets = rets
+    ret.flags = 0
+    return ret
+
+class Functions:
+    Append  = Symbols.Func('append'  , FuncType())
+    Copy    = Symbols.Func('copy'    , FuncType())
+    Delete  = Symbols.Func('delete'  , FuncType())
+    Len     = Symbols.Func('len'     , FuncType())
+    Cap     = Symbols.Func('cap'     , FuncType())
+    Make    = Symbols.Func('make'    , FuncType())
+    New     = Symbols.Func('new'     , FuncType())
+    Complex = Symbols.Func('complex' , FuncType())
+    Real    = Symbols.Func('real'    , FuncType())
+    Imag    = Symbols.Func('imag'    , FuncType())
+    Close   = Symbols.Func('close'   , FuncType())
+    Panic   = Symbols.Func('panic'   , FuncType())
+    Recover = Symbols.Func('recover' , FuncType())
+    Print   = Symbols.Func('print'   , FuncType())
+    PrintLn = Symbols.Func('println' , FuncType())
+
+class Interfaces:
+    Error = _make_intf([InterfaceMethod(
+        'Error',
+        _make_func([], [Types.String])
+    )])
+
 class ConstValue(Symbols.Const):
     value: TokenValue
 
@@ -52,6 +91,22 @@ class ConstValue(Symbols.Const):
 BUILTIN_SYMBOLS = {
     'true'       : ConstValue('true'  , Types.UntypedBool, True),
     'false'      : ConstValue('false' , Types.UntypedBool, False),
+
+    'append'     : Functions.Append,
+    'copy'       : Functions.Copy,
+    'delete'     : Functions.Delete,
+    'len'        : Functions.Len,
+    'cap'        : Functions.Cap,
+    'make'       : Functions.Make,
+    'new'        : Functions.New,
+    'complex'    : Functions.Complex,
+    'real'       : Functions.Real,
+    'imag'       : Functions.Imag,
+    'close'      : Functions.Close,
+    'panic'      : Functions.Panic,
+    'recover'    : Functions.Recover,
+    'print'      : Functions.Print,
+    'println'    : Functions.PrintLn,
 
     'bool'       : Symbols.Type('bool'       , Types.Bool),
     'int'        : Symbols.Type('int'        , Types.Int),
@@ -70,6 +125,10 @@ BUILTIN_SYMBOLS = {
     'complex64'  : Symbols.Type('complex64'  , Types.Complex64),
     'complex128' : Symbols.Type('complex128' , Types.Complex128),
     'string'     : Symbols.Type('string'     , Types.String),
+
+    'byte'       : Symbols.Type('rune'  , Types.Uint8),
+    'rune'       : Symbols.Type('rune'  , Types.Int32),
+    'error'      : Symbols.Type('error' , Interfaces.Error),
 }
 
 class Scope(metaclass = StrictFields):

@@ -2,6 +2,8 @@
 
 import os
 import enum
+import operator
+import functools
 
 from typing import Set
 from typing import Dict
@@ -14,13 +16,20 @@ from typing import Iterable
 from typing import Optional
 
 from .ast import Int
+from .ast import Bool
 from .ast import Name
 from .ast import Node
+from .ast import Rune
+from .ast import Float
 from .ast import String
+from .ast import Complex
 from .ast import Package
+from .ast import Operator
 
 from .ast import Primary
 from .ast import Constant
+from .ast import Arguments
+from .ast import Conversion
 from .ast import Expression
 
 from .ast import InitSpec
@@ -43,7 +52,10 @@ from .ast import VarArrayType as VarArrayTypeNode
 from .ast import FunctionType as FunctionTypeNode
 from .ast import InterfaceType as InterfaceTypeNode
 
+from .types import Kind
 from .types import Type
+from .types import Types
+
 from .types import MapType
 from .types import PtrType
 from .types import ChanType
@@ -52,11 +64,13 @@ from .types import ArrayType
 from .types import SliceType
 from .types import NamedType
 from .types import StructType
+from .types import UntypedType
 from .types import InterfaceType
 
 from .symbol import Scope
 from .symbol import Symbol
 from .symbol import Symbols
+from .symbol import Functions
 from .symbol import PackageScope
 
 from .modules import Module
@@ -65,15 +79,10 @@ from .modules import Resolver
 
 from .tokenizer import Token
 from .tokenizer import TokenType
+from .tokenizer import TokenValue
 
 from .parser import Parser
 from .tokenizer import Tokenizer
-
-# function type of `on_parse(fname: str) -> Package`
-OnParseCallback = Callable[
-    [str],
-    Package,
-]
 
 GOOS = {
     'aix',
@@ -180,6 +189,112 @@ CGO_ENABLED = {
     'windows/amd64',
 }
 
+INT_KINDS = {
+    Kind.Int     : TokenType.Int,
+    Kind.Int8    : TokenType.Int,
+    Kind.Int16   : TokenType.Int,
+    Kind.Int32   : TokenType.Int,
+    Kind.Int64   : TokenType.Int,
+    Kind.Uint    : TokenType.Int,
+    Kind.Uint8   : TokenType.Int,
+    Kind.Uint16  : TokenType.Int,
+    Kind.Uint32  : TokenType.Int,
+    Kind.Uint64  : TokenType.Int,
+    Kind.Uintptr : TokenType.Int,
+}
+
+FLOAT_KINDS = {
+    Kind.Float32: TokenType.Float,
+    Kind.Float64: TokenType.Float,
+}
+
+STRING_KINDS = {
+    Kind.String: TokenType.String,
+}
+
+COMPLEX_KINDS = {
+    Kind.Complex64  : TokenType.Complex,
+    Kind.Complex128 : TokenType.Complex,
+}
+
+BOOLEAN_KINDS = {
+    Kind.Bool: TokenType.Bool,
+}
+
+NUMERIC_KINDS = {
+    **INT_KINDS,
+    **FLOAT_KINDS,
+    **COMPLEX_KINDS,
+}
+
+BINARY_KINDS = {
+    **STRING_KINDS,
+    **NUMERIC_KINDS,
+}
+
+COERCING_MAPS = {
+    Types.UntypedInt: {
+        Types.Int            : Types.Int,
+        Types.Int8           : Types.Int8,
+        Types.Int16          : Types.Int16,
+        Types.Int32          : Types.Int32,
+        Types.Int64          : Types.Int64,
+        Types.Uint           : Types.Uint,
+        Types.Uint8          : Types.Uint8,
+        Types.Uint16         : Types.Uint16,
+        Types.Uint32         : Types.Uint32,
+        Types.Uint64         : Types.Uint64,
+        Types.Float32        : Types.Float32,
+        Types.Float64        : Types.Float64,
+        Types.Complex64      : Types.Complex64,
+        Types.Complex128     : Types.Complex128,
+        Types.UntypedInt     : Types.UntypedInt,
+        Types.UntypedFloat   : Types.UntypedFloat,
+        Types.UntypedComplex : Types.UntypedComplex,
+    },
+    Types.UntypedBool: {
+        Types.Bool        : Types.Bool,
+        Types.UntypedBool : Types.UntypedBool,
+    },
+    Types.UntypedFloat: {
+        Types.Float32        : Types.Float32,
+        Types.Float64        : Types.Float64,
+        Types.Complex64      : Types.Complex64,
+        Types.Complex128     : Types.Complex128,
+        Types.UntypedFloat   : Types.UntypedFloat,
+        Types.UntypedComplex : Types.UntypedComplex,
+    },
+    Types.UntypedString: {
+        Types.String        : Types.String,
+        Types.UntypedString : Types.UntypedString,
+    },
+    Types.UntypedComplex: {
+        Types.Complex64      : Types.Complex64,
+        Types.Complex128     : Types.Complex128,
+        Types.UntypedComplex : Types.UntypedComplex,
+    },
+}
+
+CONSTRUCTING_MAPS = {
+    Kind.Int        : Int,
+    Kind.Int8       : Int,
+    Kind.Int16      : Int,
+    Kind.Int32      : Int,
+    Kind.Int64      : Int,
+    Kind.Uint       : Int,
+    Kind.Uint8      : Int,
+    Kind.Uint16     : Int,
+    Kind.Uint32     : Int,
+    Kind.Uint64     : Int,
+    Kind.Uintptr    : Int,
+    Kind.Float32    : Float,
+    Kind.Float64    : Float,
+    Kind.Complex64  : Complex,
+    Kind.Complex128 : Complex,
+    Kind.Bool       : Bool,
+    Kind.String     : String,
+}
+
 PackageMap = Dict[
     str,
     Package,
@@ -196,6 +311,26 @@ class Backend(enum.Enum):
 class Combinator(enum.Enum):
     OR  = False
     AND = True
+
+class Ops:
+    @staticmethod
+    def div(a: Union[int, float], b: Union[int, float]) -> Union[int, float]:
+        if isinstance(a, float) or isinstance(b, float):
+            return a / b
+        else:
+            return a // b
+
+    @staticmethod
+    def and_not(a: int, b: int) -> int:
+        return a & ~b
+
+    @staticmethod
+    def bool_or(a: bool, b: bool) -> bool:
+        return a or b
+
+    @staticmethod
+    def bool_and(a: bool, b: bool) -> bool:
+        return a and b
 
 class Tag:
     name   : str
@@ -512,22 +647,242 @@ class Inferrer:
             if main or package.name.value != 'main':
                 yield package
 
-    ### Expression Reducers ###
+    ### Type Converters ###
 
-    def _reduce_expr(self, expr: Expression) -> Expression:
-        pass    # TODO: eval expression
-
-    def _require_const_expr(self, expr: Expression) -> Constant:
-        if expr.op or expr.right:
-            raise self._error(expr, 'must be a constant expression')
-        elif not isinstance(expr.left, Primary):
-            raise self._error(expr, 'must be a constant expression')
-        elif expr.left.mods:
-            raise self._error(expr, 'must be a constant expression')
-        elif not isinstance(expr.left.val, Constant.__args__):
-            raise self._error(expr, 'must be a constant expression')
+    def _type_of(self, val: Constant) -> Type:
+        if val.vt is not None:
+            return val.vt
+        elif isinstance(val, Int):
+            return Types.UntypedInt
+        elif isinstance(val, Rune):
+            return Types.Int32
+        elif isinstance(val, Float):
+            return Types.UntypedFloat
+        elif isinstance(val, String):
+            return Types.UntypedString
+        elif isinstance(val, Complex):
+            return Types.UntypedComplex
         else:
-            return expr.left.val
+            raise SystemError('invalid const value')
+
+    def _type_coerce(self, t1: Type, t2: Type) -> Optional[Type]:
+        if t1 == t2:
+            return t1
+        elif t1 in COERCING_MAPS and t2 in COERCING_MAPS[t1]:
+            return COERCING_MAPS[t1][t2]
+        elif t2 in COERCING_MAPS and t1 in COERCING_MAPS[t2]:
+            return COERCING_MAPS[t2][t1]
+        else:
+            return None
+
+    ### Operator Appliers ###
+
+    def _make_val(self, val: Constant, new: TokenValue) -> Constant:
+        ret = val.__class__(Token(val.col, val.row, val.file, val.kind, new))
+        ret.vt = val.vt
+        return ret
+
+    def _make_bool(self, val: Constant, new: TokenValue) -> Constant:
+        ret = Bool(Token(val.col, val.row, val.file, TokenType.Bool, operator.truth(new)))
+        ret.vt = Types.UntypedBool
+        return ret
+
+    def _make_typed(self, val: Constant, new: TokenValue, vt: Type) -> Constant:
+        vk = CONSTRUCTING_MAPS[vt.kind].kind
+        ret = CONSTRUCTING_MAPS[vt.kind](Token(val.col, val.row, val.file, vk, new))
+        ret.vt = vt
+        return ret
+
+    KindMap = Dict[Kind, TokenType]
+    UnaryOps = Callable[[TokenValue], TokenValue]
+    BinaryOps = Callable[[TokenValue, TokenValue], TokenValue]
+
+    def _unary_applier(self, val: Constant, op: UnaryOps, kinds: KindMap) -> Constant:
+        if val.vt.kind not in kinds:
+            raise self._error(val, 'invalid unary operator')
+        elif kinds[val.vt.kind] != val.kind:
+            raise SystemError('invalid ast constant kind')
+        else:
+            return self._make_val(val, op(val.value))
+
+    def _binary_applier(self, lhs: Constant, rhs: Constant, op: BinaryOps, kinds: KindMap) -> Constant:
+        t1 = lhs.vt
+        t2 = rhs.vt
+        tr = self._type_coerce(t1, t2)
+
+        # check for type compatibility
+        if tr is None or t1.kind not in kinds or t2.kind not in kinds:
+            raise self._error(lhs, 'invalid binary operator')
+
+        # apply the operator
+        try:
+            val = op(lhs.value, rhs.value)
+        except ArithmeticError as e:
+            val = e
+
+        # check the exception outside of the `except`
+        # block, cause we don't want exception chaining here
+        if isinstance(val, ArithmeticError):
+            raise self._error(rhs, val.args[0])
+        else:
+            return self._make_typed(lhs, val, tr)
+
+    def _bincmp_applier(self, lhs: Constant, rhs: Constant, op: BinaryOps) -> Constant:
+        if self._type_coerce(lhs.vt, rhs.vt) is None:
+            raise self._error(lhs, 'invalid binary comparison')
+        else:
+            return self._make_bool(lhs, op(lhs.value, rhs.value))
+
+    __unary_ops__ = {
+        '+': functools.partial(_unary_applier, op = operator.pos  , kinds = NUMERIC_KINDS),
+        '-': functools.partial(_unary_applier, op = operator.neg  , kinds = NUMERIC_KINDS),
+        '!': functools.partial(_unary_applier, op = operator.not_ , kinds = BOOLEAN_KINDS),
+        '^': functools.partial(_unary_applier, op = operator.inv  , kinds = INT_KINDS),
+    }
+
+    __binary_ops__ = {
+        '+'  : functools.partial(_binary_applier, op = operator.add      , kinds = BINARY_KINDS),
+        '-'  : functools.partial(_binary_applier, op = operator.sub      , kinds = NUMERIC_KINDS),
+        '*'  : functools.partial(_binary_applier, op = operator.mul      , kinds = NUMERIC_KINDS),
+        '/'  : functools.partial(_binary_applier, op = Ops.div           , kinds = NUMERIC_KINDS),
+        '%'  : functools.partial(_binary_applier, op = operator.mod      , kinds = INT_KINDS),
+        '&'  : functools.partial(_binary_applier, op = operator.and_     , kinds = INT_KINDS),
+        '|'  : functools.partial(_binary_applier, op = operator.or_      , kinds = INT_KINDS),
+        '^'  : functools.partial(_binary_applier, op = operator.xor      , kinds = INT_KINDS),
+        '<<' : functools.partial(_binary_applier, op = operator.lshift   , kinds = INT_KINDS),
+        '>>' : functools.partial(_binary_applier, op = operator.rshift   , kinds = INT_KINDS),
+        '&^' : functools.partial(_binary_applier, op = Ops.and_not       , kinds = INT_KINDS),
+        '&&' : functools.partial(_binary_applier, op = Ops.bool_and      , kinds = BOOLEAN_KINDS),
+        '||' : functools.partial(_binary_applier, op = Ops.bool_or       , kinds = BOOLEAN_KINDS),
+        '==' : functools.partial(_bincmp_applier, op = operator.eq),
+        '<'  : functools.partial(_bincmp_applier, op = operator.lt),
+        '>'  : functools.partial(_bincmp_applier, op = operator.gt),
+        '!=' : functools.partial(_bincmp_applier, op = operator.ne),
+        '<=' : functools.partial(_bincmp_applier, op = operator.le),
+        '>=' : functools.partial(_bincmp_applier, op = operator.ge),
+    }
+
+    def _apply_unary(self, val: Constant, op: Operator) -> Constant:
+        if op.value not in self.__unary_ops__:
+            raise SystemError('invalid unary operator')
+        else:
+            return self.__unary_ops__[op.value](self, val)
+
+    def _apply_binary(self, lhs: Constant, rhs: Constant, op: Operator) -> Constant:
+        if op.value not in self.__binary_ops__:
+            raise SystemError('invalid binary operator')
+        else:
+            return self.__binary_ops__[op.value](self, lhs, rhs)
+
+    ### Expression Evaluators ###
+
+    def _eval_name(self, ctx: Context, name: Name) -> Constant:
+        pass    # TODO: eval name
+
+    def _eval_expr(self, ctx: Context, expr: Expression) -> Constant:
+        if isinstance(expr.left, Expression):
+            lhs = self._eval_expr(ctx, expr.left)
+        else:
+            lhs = self._eval_primary(ctx, expr.left)
+
+        # no operator is present, must be a single value
+        if expr.op is None:
+            if expr.right is not None:
+                raise SystemError('invalid expr ast')
+            else:
+                return lhs
+
+        # apply corresponding operators
+        if expr.right is None:
+            return self._apply_unary(lhs, expr.op)
+        else:
+            return self._apply_binary(lhs, self._eval_expr(ctx, expr.right), expr.op)
+
+    def _eval_const(self, _ctx: Context, const: Constant) -> Constant:
+        const.vt = self._type_of(const)
+        return const
+
+    def _eval_primary(self, ctx: Context, primary: Primary) -> Constant:
+        if len(primary.mods) > 2:
+            raise self._error(primary, 'must be a constant expression')
+        elif primary.mods:
+            return self._eval_complex(ctx, primary)
+        else:
+            return self._eval_singular(ctx, primary)
+
+    def _eval_complex(self, ctx: Context, primary: Primary) -> Constant:
+        val = primary.val
+        mod = primary.mods[0]
+
+        # must be a name
+        if not isinstance(val, Name):
+            raise self._error(primary, 'must be a constant expression')
+
+        # must be a function call
+        if not isinstance(mod, Arguments):
+            raise self._error(primary, 'must be a constant expression')
+
+        # resolve the function
+        name = primary.val.value
+        func = ctx.scope.resolve(name)
+
+        # must be the 'complex' function
+        if func is not Functions.Complex:
+            raise self._error(primary, 'must be a constant expression')
+
+        # must not be a variadic call
+        if mod.var:
+            raise self._error(primary, 'must be a constant expression')
+
+        # must call with 2 arguments
+        if len(mod.args) != 2:
+            raise self._error(primary, '\'complex\' function takes exact 2 arguments')
+
+        # both must all be expressions
+        if not all(isinstance(arg, Expression) for arg in mod.args):
+            raise self._error(primary, 'must be a constant expression')
+
+        # real and imaginary part
+        real = self._eval_expr(ctx, mod.args[0])
+        imag = self._eval_expr(ctx, mod.args[1])
+
+        # real part must be ints or floats
+        if real.kind not in (TokenType.Int, TokenType.Float):
+            raise self._error(real, 'real part of a complex number must be ints or floats')
+
+        # imaginary part must be ints or floats
+        if imag.kind not in (TokenType.Int, TokenType.Float):
+            raise self._error(real, 'imaginary part of a complex number must be ints or floats')
+
+        # check token value type
+        if not isinstance(real.value, (int, float)) or not isinstance(imag.value, (int, float)):
+            raise SystemError('invalid token value')
+
+        # infer the result type, and construct the complex value
+        vt = self._type_coerce(real.vt, imag.vt)
+        val = complex(float(real.value), float(imag.value))
+
+        # check the result type
+        if vt is None:
+            raise self._error(primary, 'invalid complex component type')
+
+        # build the result
+        ret = Complex(Token(primary.col, primary.row, primary.file, TokenType.Complex, val))
+        ret.vt = Types.UntypedComplex if isinstance(vt, UntypedType) else Types.Complex128
+        return ret
+
+    def _eval_singular(self, ctx: Context, primary: Primary) -> Constant:
+        if isinstance(primary.val, Name):
+            return self._eval_name(ctx, primary.val)
+        elif isinstance(primary.val, Constant.__args__):
+            return self._eval_const(ctx, primary.val)
+        elif isinstance(primary.val, Conversion):
+            return self._eval_conversion(ctx, primary.val)
+        else:
+            raise self._error(primary, 'must be a constant expression')
+
+    def _eval_conversion(self, ctx: Context, conversion: Conversion) -> Constant:
+        pass    # TODO: eval conversion
 
     ### Type Inferrers ###
 
@@ -605,8 +960,9 @@ class Inferrer:
         vtype.elem = self._infer_type(ctx, node.elem)
 
     def _infer_array_type(self, ctx: Context, vtype: ArrayType, node: ArrayTypeNode):
+        value = self._eval_expr(ctx, node.len)
         etype = self._infer_type(ctx, node.elem)
-        value = self._require_const_expr(self._reduce_expr(node.len))
+        print(value)    # TODO: remove this
 
         # array type must be valid
         if not etype.valid:
@@ -614,7 +970,7 @@ class Inferrer:
 
         # must be an integer expression
         if not isinstance(value, Int):
-            raise self._error(value, 'must be an integer expression')
+            raise self._error(node.len, 'must be an integer expression')
 
         # complete the type
         vtype.len = value.value

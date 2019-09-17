@@ -15,12 +15,13 @@ GOPROJ = os.path.join(GOPATH[0], 'src', GOPKG)
 
 USE_MOD = os.environ.get('USE_MOD', '1') == '1'
 
+print('GOROOT :', GOROOT)
+print('GOPATH :', GOPATH)
+print('GOPKG  :', GOPKG)
+print('GOPROJ :', GOPROJ)
+
 class TestInferrer(unittest.TestCase):
     def test_inferrer(self):
-        print('GOROOT :', GOROOT)
-        print('GOPATH :', GOPATH)
-        print('GOPKG  :', GOPKG)
-        print('GOPROJ :', GOPROJ)
         ifr = Inferrer('darwin', 'amd64', GOPROJ, GOROOT, GOPATH)
         ifr.mode = Mode.GO_MOD if USE_MOD else Mode.GO_VENDOR
         ifr.infer(GOPKG)

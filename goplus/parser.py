@@ -1341,52 +1341,31 @@ class Parser:
 
     ### Language Structures --- Statements / Generic Statements ###
 
-    def _parse_statement(self) -> Statement:
-        if self._should(self._peek(), TokenType.Keyword, 'go'):
-            return self._parse_go()
-        elif self._should(self._peek(), TokenType.Keyword, 'if'):
-            return self._parse_if()
-        elif self._should(self._peek(), TokenType.Keyword, 'for'):
-            return self._parse_for()
-        elif self._should(self._peek(), TokenType.Keyword, 'var'):
-            return self._parse_decl_statement(self._parse_var)
-        elif self._should(self._peek(), TokenType.Keyword, 'goto'):
-            return self._parse_goto()
-        elif self._should(self._peek(), TokenType.Keyword, 'type'):
-            return self._parse_decl_statement(self._parse_type_spec)
-        elif self._should(self._peek(), TokenType.Keyword, 'const'):
-            return self._parse_decl_statement(self._parse_val)
-        elif self._should(self._peek(), TokenType.Keyword, 'defer'):
-            return self._parse_defer()
-        elif self._should(self._peek(), TokenType.Keyword, 'break'):
-            return self._parse_break()
-        elif self._should(self._peek(), TokenType.Keyword, 'return'):
-            return self._parse_return()
-        elif self._should(self._peek(), TokenType.Keyword, 'select'):
-            return self._parse_select()
-        elif self._should(self._peek(), TokenType.Keyword, 'switch'):
-            return self._parse_switch()
-        elif self._should(self._peek(), TokenType.Keyword, 'continue'):
-            return self._parse_continue()
-        elif self._should(self._peek(), TokenType.Keyword, 'fallthrough'):
-            return self._parse_fallthrough()
-        elif self._should(self._peek(), TokenType.Operator, '{'):
-            return self._parse_compound_statement()
-        if self._is_label():
-            return self._parse_labeled()
-        else:
-            return self._parse_simple_statement()
-
     InnerSpecs = List[Union[
         InitSpec,
         TypeSpec,
     ]]
+
+    def _parse_val_decl(self) -> List[InitSpec]:
+        return self._parse_decl_statement(self._parse_val)
+
+    def _parse_var_decl(self) -> List[InitSpec]:
+        return self._parse_decl_statement(self._parse_var)
+
+    def _parse_type_decl(self) -> List[TypeSpec]:
+        return self._parse_decl_statement(self._parse_type_spec)
 
     def _parse_decl_statement(self, parser: Callable[[Token, InnerSpecs], None]) -> InnerSpecs:
         ret = []
         self._next()
         self._parse_declarations(ret, parser)
         return ret
+
+    def _parse_label_statement(self) -> Statement:
+        if self._is_label():
+            return self._parse_labeled()
+        else:
+            return self._parse_simple_statement()
 
     def _parse_simple_statement(self) -> SimpleStatement:
         tk = self._peek()
@@ -1441,6 +1420,69 @@ class Parser:
         # skip the '}'
         self._next()
         return ret
+
+    __stmt_parsers__ = {
+        TokenType.Int     : _parse_simple_statement,
+        TokenType.Name    : _parse_label_statement,
+        TokenType.Rune    : _parse_simple_statement,
+        TokenType.Float   : _parse_simple_statement,
+        TokenType.String  : _parse_simple_statement,
+        TokenType.Complex : _parse_simple_statement,
+    }
+
+    __stmt_mappers__ = {
+        TokenType.Keyword: {
+            'go'          : _parse_go,
+            'if'          : _parse_if,
+            'for'         : _parse_for,
+            'var'         : _parse_var_decl,
+            'map'         : _parse_simple_statement,
+            'chan'        : _parse_simple_statement,
+            'func'        : _parse_simple_statement,
+            'goto'        : _parse_goto,
+            'type'        : _parse_type_decl,
+            'const'       : _parse_val_decl,
+            'defer'       : _parse_defer,
+            'break'       : _parse_break,
+            'return'      : _parse_return,
+            'select'      : _parse_select,
+            'switch'      : _parse_switch,
+            'struct'      : _parse_simple_statement,
+            'continue'    : _parse_continue,
+            'interface'   : _parse_simple_statement,
+            'fallthrough' : _parse_fallthrough,
+        },
+        TokenType.Operator: {
+            '+'           : _parse_simple_statement,
+            '-'           : _parse_simple_statement,
+            '*'           : _parse_simple_statement,
+            '&'           : _parse_simple_statement,
+            '^'           : _parse_simple_statement,
+            '<-'          : _parse_simple_statement,
+            '!'           : _parse_simple_statement,
+            '('           : _parse_simple_statement,
+            '['           : _parse_simple_statement,
+            '{'           : _parse_compound_statement,
+        }
+    }
+
+    def _parse_statement(self) -> Statement:
+        tk = self._peek()
+        parser = self.__stmt_parsers__.get(tk.kind)
+
+        # check for simple parsers
+        if parser is not None:
+            return parser(self)
+
+        # check for mapped parsers
+        mapper = self.__stmt_mappers__.get(tk.kind, {})
+        parser = mapper.get(tk.value)
+
+        # call the parser if found, otherwise it's an error
+        if parser is None:
+            raise self._error(tk, 'statements expected')
+        else:
+            return parser(self)
 
     ### Language Structures --- Expressions ###
 
@@ -1785,6 +1827,7 @@ class Parser:
             raise self._error(self._peek(), '\'=\' or type specifier expected')
 
         # add to variable / const list
+        val.iota = self.iota
         val.consts = consts
         ret.append(val)
 

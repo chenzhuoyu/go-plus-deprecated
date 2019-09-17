@@ -12,8 +12,6 @@ from typing import Optional
 from typing import Sequence
 
 from .types import Type as T
-from .types import Types as U
-
 from .utils import StrictFields
 from .flags import ChannelOptions
 from .flags import FunctionOptions
@@ -30,7 +28,6 @@ class Node(metaclass = StrictFields):
 
     # don't initialize these fields in the generated constructor
     __noinit__ = {
-        'vt',
         'row',
         'col',
         'file',
@@ -40,12 +37,6 @@ class Node(metaclass = StrictFields):
         self.row = tk.row
         self.col = tk.col
         self.file = tk.file
-
-        # noinspection PyUnresolvedReferences
-        # special case for the `vt` attribute, the `__attr__` is a set of
-        # all class attr names, it is added by the `StrictFields` metaclass
-        if 'vt' not in self.__attrs__:
-            self.vt = None
 
     def __repr__(self) -> str:
         return json.dumps(self._build(set()), indent = 4)
@@ -81,6 +72,8 @@ class Node(metaclass = StrictFields):
     def _build_val(self, path: Set[int], val: Any) -> Any:
         if isinstance(val, Node):
             return val._build(path)
+        elif isinstance(val, complex):
+            return str(val)
         elif isinstance(val, bytes):
             return val.decode('unicode_escape')
         elif isinstance(val, dict):
@@ -108,26 +101,26 @@ class Value(Node):
         assert tk.kind == self.kind
 
 class Int(Value):
-    vt   = U.UntypedInt
     kind = TokenType.Int
+
+# virtual AST node, used by type inferrer,
+# thus the parser never yields this AST node
+class Bool(Value):
+    kind = TokenType.Bool
 
 class Name(Value):
     kind = TokenType.Name
 
 class Rune(Value):
-    vt   = U.UntypedRune
     kind = TokenType.Rune
 
 class Float(Value):
-    vt   = U.UntypedFloat
     kind = TokenType.Float
 
 class String(Value):
-    vt   = U.UntypedString
     kind = TokenType.String
 
 class Complex(Value):
-    vt   = U.UntypedComplex
     kind = TokenType.Complex
 
 class Operator(Value):
@@ -253,6 +246,7 @@ class Composite(Node):
 
 Constant = Union[
     Int,
+    Bool,
     Rune,
     Float,
     String,
@@ -301,6 +295,7 @@ class LinkSpec(Node):
     link: str
 
 class InitSpec(Node):
+    iota   : Optional[int]
     type   : Optional[Type]
     names  : List[Name]
     values : List[Expression]
