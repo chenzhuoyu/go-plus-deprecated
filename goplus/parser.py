@@ -713,30 +713,6 @@ class Parser:
 
     ### Language Structures --- Types ###
 
-    def _parse_type(self) -> Type:
-        if self._should(self._peek(), TokenType.Keyword, 'map'):
-            return self._parse_map_type()
-        elif self._should(self._peek(), TokenType.Operator, '['):
-            return self._parse_list_type(for_literal = False)
-        elif self._should(self._peek(), TokenType.Name):
-            return self._parse_named_type()
-        elif self._should(self._peek(), TokenType.Operator, '('):
-            return self._parse_nested_type()
-        elif self._should(self._peek(), TokenType.Keyword, 'struct'):
-            return self._parse_struct_type()
-        elif self._should(self._peek(), TokenType.Keyword, 'chan'):
-            return self._parse_channel_type(chan = True)
-        elif self._should(self._peek(), TokenType.Operator, '<-'):
-            return self._parse_channel_type(chan = False)
-        elif self._should(self._peek(), TokenType.Operator, '*'):
-            return self._parse_pointer_type()
-        elif self._should(self._peek(), TokenType.Keyword, 'func'):
-            return self._parse_function_type()
-        elif self._should(self._peek(), TokenType.Keyword, 'interface'):
-            return self._parse_interface_type()
-        else:
-            raise self._error(self._peek(), 'type specifier expected')
-
     def _parse_map_type(self) -> MapType:
         ret = MapType(self._next())
         self._require(self._next(), TokenType.Operator, '[')
@@ -769,6 +745,9 @@ class Parser:
         # parse element type
         ret.elem = self._parse_type()
         return ret
+
+    def _parse_list_literal_type(self) -> Union[ArrayType, SliceType, VarArrayType]:
+        return self._parse_list_type(for_literal = True)
 
     def _parse_named_type(self) -> NamedType:
         tk = self._next()
@@ -860,6 +839,12 @@ class Parser:
         ret.elem = self._parse_type()
         return ret
 
+    def _parse_simple_chan_type(self) -> ChannelType:
+        return self._parse_channel_type(chan = True)
+
+    def _parse_receive_chan_type(self) -> ChannelType:
+        return self._parse_channel_type(chan = False)
+
     def _parse_pointer_type(self) -> PointerType:
         ret = PointerType(self._next())
         ret.base = self._parse_type()
@@ -900,6 +885,44 @@ class Parser:
         ret.name = self._parse_name()
         ret.type = self._parse_signature()
         return ret
+
+    __type_parsers__ = {
+        TokenType.Name: _parse_named_type,
+    }
+
+    __type_mappers__ = {
+        TokenType.Keyword: {
+            'map'       : _parse_map_type,
+            'chan'      : _parse_simple_chan_type,
+            'func'      : _parse_function_type,
+            'struct'    : _parse_struct_type,
+            'interface' : _parse_interface_type,
+        },
+        TokenType.Operator: {
+            '('         : _parse_nested_type,
+            '*'         : _parse_pointer_type,
+            '['         : _parse_list_literal_type,
+            '<-'        : _parse_receive_chan_type,
+        },
+    }
+
+    def _parse_type(self) -> Type:
+        tk = self._peek()
+        parser = self.__type_parsers__.get(tk.kind)
+
+        # check for direct parsers
+        if parser is not None:
+            return parser(self)
+
+        # find mapped parsers
+        mapper = self.__type_mappers__.get(tk.kind, {})
+        parser = mapper.get(tk.value)
+
+        # check for mapped parsers
+        if parser is None:
+            raise self._error(tk, 'type specifier expected')
+        else:
+            return parser(self)
 
     ### Language Structures --- Functions ###
 

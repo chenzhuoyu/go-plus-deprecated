@@ -59,17 +59,23 @@ class Type(metaclass = StrictFields):
     def __hash__(self) -> int:
         return self.kind.value
 
-    def __eq__(self, other: 'Type'):
-        return self.valid and other.valid and self.kind == other.kind
+    def __ne__(self, other: 'Type') -> bool:
+        return not (self == other)
+
+    def __eq__(self, other: 'Type') -> bool:
+        if not isinstance(other, Type):
+            return False
+        else:
+            return self.valid and other.valid and self.kind == other.kind
 
     def _to_repr(self, _path: FrozenSet['Type']) -> str:
-        if self in _path:
+        if id(self) in _path:
             return '...'
         else:
-            return self._get_repr(_path | {self})
+            return self._get_repr(_path | {id(self)})
 
     def _get_repr(self, _path: FrozenSet['Type']) -> str:
-        return '%s@%#x' % (self.kind.name.lower(), id(self))
+        return self.kind.name.lower()
 
 class PtrType(Type):
     elem: Optional[Type]
@@ -81,11 +87,11 @@ class PtrType(Type):
     def __hash__(self) -> int:
         return hash(self.elem)
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and self.elem == cast(PtrType, val).elem
 
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
-        return '(*%s)@%#x' % (self.elem._to_repr(_path), id(self))
+        return '*%s' % self.elem._to_repr(_path)
 
 class MapType(Type):
     key  : Optional[Type]
@@ -99,16 +105,15 @@ class MapType(Type):
     def __hash__(self) -> int:
         return hash((self.key, self.elem))
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
                self.key == cast(MapType, val).key and \
                self.elem == cast(MapType, val).elem
 
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
-        return '(map[%s]%s)@%#x' % (
+        return 'map[%s]%s' % (
             self.key._to_repr(_path),
             self.elem._to_repr(_path),
-            id(self),
         )
 
 class FuncType(Type):
@@ -124,7 +129,7 @@ class FuncType(Type):
     def __hash__(self) -> int:
         return hash((self.var, self.flags))
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
                self.var == cast(FuncType, val).var and \
                self.args == cast(FuncType, val).args and \
@@ -149,16 +154,15 @@ class ChanType(Type):
     def __hash__(self) -> int:
         return hash((self.dir, self.elem))
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
                self.dir == cast(ChanType, val).dir and \
                self.elem == cast(ChanType, val).elem
 
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
-        return '(%s %s)@%#x' % (
+        return '%s %s' % (
             self.__chan_type__[self.dir],
             self.elem._to_repr(_path),
-            id(self),
         )
 
 class ArrayType(Type):
@@ -172,16 +176,16 @@ class ArrayType(Type):
     def __hash__(self) -> int:
         return hash((self.len, self.elem))
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
                self.len == cast(ArrayType, val).len and \
                self.elem == cast(ArrayType, val).elem
 
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
         if self.len is None:
-            return '([?]%r)@%#x' % (self.elem._to_repr(_path), id(self))
+            return '[?]%r' % self.elem._to_repr(_path)
         else:
-            return '([%d]%r)@%#x' % (self.len, self.elem._to_repr(_path), id(self))
+            return '[%d]%r' % (self.len, self.elem._to_repr(_path))
 
 class SliceType(Type):
     elem: Optional[Type]
@@ -193,11 +197,11 @@ class SliceType(Type):
     def __hash__(self) -> int:
         return hash(self.elem)
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and self.elem == cast(SliceType, val).elem
 
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
-        return '([]%s)@%#x' % (self.elem._to_repr(_path), id(self))
+        return '[]%s' % self.elem._to_repr(_path)
 
 class StructType(Type):
     size   : int
@@ -212,7 +216,7 @@ class StructType(Type):
     def __hash__(self) -> int:
         return hash((self.size, self.align))
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
                self.size == cast(StructType, val).size and \
                self.align == cast(StructType, val).align and \
@@ -227,7 +231,7 @@ class StructField(metaclass = StrictFields):
     offset   : int
     embedded : bool
 
-    def __eq__(self, val: 'StructField'):
+    def __eq__(self, val: 'StructField') -> bool:
         return self.name == val.name and \
                self.type == val.type and \
                self.tags == val.tags and \
@@ -242,7 +246,7 @@ class InterfaceType(Type):
     def __init__(self):
         super().__init__(Kind.Interface)
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and self.methods == cast(InterfaceType, val).methods
 
 class InterfaceMethod(metaclass = StrictFields):
@@ -253,7 +257,7 @@ class InterfaceMethod(metaclass = StrictFields):
         self.name = name
         self.type = mtype
 
-    def __eq__(self, val: 'InterfaceMethod'):
+    def __eq__(self, val: 'InterfaceMethod') -> bool:
         return self.name == val.name and self.type == val.type
 
 class NamedType(Type):
@@ -268,18 +272,35 @@ class NamedType(Type):
     def __hash__(self) -> int:
         return hash(self.type)
 
-    def __eq__(self, val: 'Type'):
+    def __eq__(self, val: 'Type') -> bool:
         if not isinstance(val, NamedType):
             return self.type == val
         else:
             return self.type == val.type
 
+    @property
+    def kind(self) -> Kind:
+        if self.type is None:
+            return Kind.Invalid
+        else:
+            return self.type.kind
+
+    @property
+    def valid(self) -> bool:
+        if self.type is None:
+            return False
+        else:
+            return self.type.valid
+
+    kind  = kind.setter(lambda *_: None)
+    valid = valid.setter(lambda *_: None)
+
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
-        return 'named<%s: %r>@%#x' % (self.name, self.type._to_repr(_path), id(self))
+        return '%s(%s)' % (self.name, self.type._get_repr(_path))
 
 class UntypedType(Type):
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
-        return 'untyped<%s>' % super()._get_repr(_path)
+        return 'untyped %s' % super()._get_repr(_path)
 
 class Types:
     Bool           = Type(Kind.Bool)

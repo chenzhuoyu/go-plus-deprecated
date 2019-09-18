@@ -82,7 +82,10 @@ class Token:
 
     @classmethod
     def rune(cls, tk: 'Tokenizer', value: bytes):
-        return cls(tk.save.col, tk.save.row, tk.file, TokenType.Rune, value)
+        if len(value) == 1:
+            return cls(tk.save.col, tk.save.row, tk.file, TokenType.Rune, value[0])
+        else:
+            return cls(tk.save.col, tk.save.row, tk.file, TokenType.Rune, ord(value.decode('utf-8')))
 
     @classmethod
     def ident(cls, tk: 'Tokenizer', value: str):

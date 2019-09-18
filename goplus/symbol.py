@@ -126,7 +126,7 @@ BUILTIN_SYMBOLS = {
     'complex128' : Symbols.Type('complex128' , Types.Complex128),
     'string'     : Symbols.Type('string'     , Types.String),
 
-    'byte'       : Symbols.Type('rune'  , Types.Uint8),
+    'byte'       : Symbols.Type('byte'  , Types.Uint8),
     'rune'       : Symbols.Type('rune'  , Types.Int32),
     'error'      : Symbols.Type('error' , Interfaces.Error),
 }
