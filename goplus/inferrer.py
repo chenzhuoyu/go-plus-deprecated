@@ -7,6 +7,7 @@ import operator
 import functools
 
 from typing import Set
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Tuple
@@ -52,10 +53,12 @@ from .ast import PointerType as PointerTypeNode
 from .ast import VarArrayType as VarArrayTypeNode
 from .ast import FunctionType as FunctionTypeNode
 from .ast import InterfaceType as InterfaceTypeNode
+from .ast import InterfaceMethod as InterfaceMethodNode
 
 from .types import Kind
 from .types import Type
 from .types import Types
+from .types import Method
 
 from .types import MapType
 from .types import PtrType
@@ -67,6 +70,9 @@ from .types import NamedType
 from .types import StructType
 from .types import UntypedType
 from .types import InterfaceType
+
+from .flags import ChannelOptions
+from .flags import FunctionOptions
 
 from .symbol import Scope
 from .symbol import Symbol
@@ -223,6 +229,11 @@ BOOLEAN_KINDS = {
     Kind.Bool: TokenType.Bool,
 }
 
+REAL_KINDS = {
+    **INT_KINDS,
+    **FLOAT_KINDS,
+}
+
 NUMERIC_KINDS = {
     **INT_KINDS,
     **FLOAT_KINDS,
@@ -232,6 +243,55 @@ NUMERIC_KINDS = {
 GENERIC_KINDS = {
     **STRING_KINDS,
     **NUMERIC_KINDS,
+}
+
+ORDERED_KINDS = {
+    Kind.Int,
+    Kind.Int8,
+    Kind.Int16,
+    Kind.Int32,
+    Kind.Int64,
+    Kind.Uint,
+    Kind.Uint8,
+    Kind.Uint16,
+    Kind.Uint32,
+    Kind.Uint64,
+    Kind.Float32,
+    Kind.Float64,
+    Kind.String,
+}
+
+NULLABLE_KINDS = {
+    Kind.Map,
+    Kind.Ptr,
+    Kind.Chan,
+    Kind.Func,
+    Kind.Slice,
+    Kind.Interface,
+    Kind.UnsafePointer,
+}
+
+COMPARABLE_KINDS = {
+    Kind.Bool,
+    Kind.Int,
+    Kind.Int8,
+    Kind.Int16,
+    Kind.Int32,
+    Kind.Int64,
+    Kind.Uint,
+    Kind.Uint8,
+    Kind.Uint16,
+    Kind.Uint32,
+    Kind.Uint64,
+    Kind.Float32,
+    Kind.Float64,
+    Kind.Complex64,
+    Kind.Complex128,
+    Kind.String,
+    Kind.Ptr,
+    Kind.Chan,
+    Kind.Interface,
+    Kind.UnsafePointer,
 }
 
 COERCING_MAPS = {
@@ -276,6 +336,7 @@ def _is_f64(v: float) -> bool:
     return -1.7976931348623158e+308 <= v <= 1.7976931348623158e+308
 
 LITERAL_RANGES = {
+    Kind.Bool       : lambda v: False,
     Kind.Int        : lambda v: -0x8000000000000000 <= v <= 0x7fffffffffffffff,
     Kind.Int8       : lambda v: -0x80               <= v <= 0x7f,
     Kind.Int16      : lambda v: -0x8000             <= v <= 0x7fff,
@@ -291,11 +352,11 @@ LITERAL_RANGES = {
     Kind.Float64    : _is_f64,
     Kind.Complex64  : lambda v: _is_f32(v.real) and _is_f32(v.imag),
     Kind.Complex128 : lambda v: _is_f64(v.real) and _is_f64(v.imag),
-    Kind.Bool       : lambda v: False,
     Kind.String     : lambda _: True,
 }
 
 CONVERTING_MAPS = {
+    Kind.Bool       : bool,
     Kind.Int        : int,
     Kind.Int8       : int,
     Kind.Int16      : int,
@@ -311,11 +372,11 @@ CONVERTING_MAPS = {
     Kind.Float64    : float,
     Kind.Complex64  : complex,
     Kind.Complex128 : complex,
-    Kind.Bool       : bool,
     Kind.String     : bytes,
 }
 
 CONSTRUCTING_MAPS = {
+    Kind.Bool       : Bool,
     Kind.Int        : Int,
     Kind.Int8       : Int,
     Kind.Int16      : Int,
@@ -331,7 +392,6 @@ CONSTRUCTING_MAPS = {
     Kind.Float64    : Float,
     Kind.Complex64  : Complex,
     Kind.Complex128 : Complex,
-    Kind.Bool       : Bool,
     Kind.String     : String,
 }
 
@@ -344,6 +404,11 @@ NumericType = Union[
     int,
     float,
     complex,
+]
+
+FunctionType = Union[
+    FunctionTypeNode,
+    InterfaceMethodNode,
 ]
 
 class Mode(enum.IntEnum):
@@ -742,6 +807,14 @@ class Inferrer:
         else:
             raise SystemError('invalid const value')
 
+    def _type_deref(self, vt: Union[Type, NamedType]) -> Optional[Type]:
+        if not isinstance(vt, NamedType):
+            return vt
+        elif vt.type is None:
+            return None
+        else:
+            return self._type_deref(vt.type)
+
     def _type_coerce(self, t1: Type, t2: Type) -> Optional[Type]:
         if t1 == t2:
             return t1
@@ -842,7 +915,7 @@ class Inferrer:
         rk = rhs.vt.kind
 
         # check the right operand
-        if rk not in INT_KINDS and (rk not in FLOAT_KINDS):
+        if rk not in REAL_KINDS:
             raise self._error(lhs, 'shift count type %s, must be integer' % rhs.vt)
 
         # type of the LHS must be ints or untyped types
@@ -859,7 +932,7 @@ class Inferrer:
 
         # check for RHS fractional part
         if rfrac != 0.0:
-            raise self._error(lhs, 'constant %s truncated to integer' % repr(rhs.value))
+            raise self._error(rhs, 'constant %s truncated to integer' % repr(rhs.value))
 
         # apply the shift
         if lk in INT_KINDS:
@@ -1058,25 +1131,43 @@ class Inferrer:
         if isinstance(sym, Symbols.Type):
             return self._cast_to(sym.type, self._eval_args(ctx, mod))
 
-        # must be the 'complex' function
-        if sym is not Functions.Complex:
+        # must be a constant function
+        if sym not in self.__function_map__:
             raise self._error(primary, 'must be a constant expression')
+        else:
+            return self.__function_map__[sym](ctx, primary, mod)
+
+    def _eval_function_cap(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
+        pass    # TODO: eval cap
+
+    def _eval_function_len(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
+        pass    # TODO: eval len
+
+    def _eval_function_imag(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
+        pass    # TODO: eval imag
+
+    def _eval_function_real(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
+        pass    # TODO: eval real
+
+    def _eval_function_complex(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
+        args = mod.args
+        argc = len(args)
 
         # must not be a variadic call
         if mod.var:
             raise self._error(primary, 'must be a constant expression')
 
         # must call with 2 arguments
-        if len(mod.args) != 2:
+        if argc != 2:
             raise self._error(primary, '\'complex\' function takes exact 2 arguments')
 
         # both must all be expressions
-        if not all(isinstance(arg, Expression) for arg in mod.args):
+        if not isinstance(args[0], Expression) or not isinstance(args[1], Expression):
             raise self._error(primary, 'must be a constant expression')
 
         # real and imaginary part
-        real = self._eval_expr(ctx, mod.args[0])
-        imag = self._eval_expr(ctx, mod.args[1])
+        real = self._eval_expr(ctx, args[0])
+        imag = self._eval_expr(ctx, args[1])
 
         # real part must be ints or floats
         if real.kind not in (TokenType.Int, TokenType.Float):
@@ -1102,6 +1193,14 @@ class Inferrer:
         ret = Complex(Token(primary.col, primary.row, primary.file, TokenType.Complex, val))
         ret.vt = Types.UntypedComplex if isinstance(vt, UntypedType) else Types.Complex128
         return ret
+
+    __function_map__ = {
+        Functions.Cap     : _eval_function_cap,
+        Functions.Len     : _eval_function_len,
+        Functions.Imag    : _eval_function_imag,
+        Functions.Real    : _eval_function_real,
+        Functions.Complex : _eval_function_complex,
+    }
 
     def _eval_conversion(self, ctx: Context, conversion: Conversion) -> Constant:
         return self._cast_to(
@@ -1135,7 +1234,7 @@ class Inferrer:
             return node.vt
 
         # create an empty type node before inferring recursively
-        node.vt = factory(node)
+        node.vt = factory()
         inferrer(self, ctx, node.vt, node)
         return node.vt
 
@@ -1174,13 +1273,173 @@ class Inferrer:
         else:
             return symbol.type
 
+    ### Type Traits ###
+
+    def _is_assignable(self, t: Type, v: Type) -> bool:
+        """
+        Type assignability check,
+        refs from https://golang.org/ref/spec#Assignability
+
+        A value x is assignable to a variable of type T ("x is assignable to T")
+        if one of the following conditions applies:
+        """
+
+        # x's type is identical to T
+        if t == v:
+            return True
+
+        # x's type V and T have identical underlying types and at least one of
+        # V or T is not a defined type
+        elif (self._type_deref(t) == self._type_deref(v)) and \
+             (not isinstance(t, NamedType) or not isinstance(v, NamedType)):
+            return True
+
+        # T is an interface type and x implements T
+        elif (t.kind == Kind.Interface) and \
+             (self._is_implements(v, cast(InterfaceType, t))):
+            return True
+
+        # x is a bidirectional channel value, T is a channel type, x's type V
+        # and T have identical element types, and at least one of V or T is not
+        # a defined type
+        elif (t.kind == Kind.Chan) and \
+             (v.kind == Kind.Chan) and \
+             (cast(ChanType, v).dir == ChannelOptions.BOTH) and \
+             (cast(ChanType, v).elem == cast(ChanType, t).elem) and \
+             (not isinstance(t, NamedType) or not isinstance(v, NamedType)):
+            return True
+
+        # x is the predeclared identifier nil and T is a pointer, function,
+        # slice, map, channel, or interface type
+        elif v.kind == Kind.Nil and t.kind in NULLABLE_KINDS:
+            return True
+
+        # x is an untyped constant representable by a value of type T
+        elif v in COERCING_MAPS and t.kind in COERCING_MAPS[v]:
+            return True
+
+        # otherwise, x is not assignable to T
+        else:
+            return False
+
+    def _is_comparable(self, t1: Type, t2: Type) -> bool:
+        """
+        Type comparability check,
+        refs from https://golang.org/ref/spec#Comparison_operators
+
+        In any comparison, the first operand must be assignable to the type of
+        the second operand, or vice versa.
+
+        The equality operators == and != apply to operands that are comparable.
+        The ordering operators <, <=, >, and >= apply to operands that are
+        ordered. These terms and the result of the comparisons are defined as
+        follows:
+        """
+
+        # must be valid types
+        if not t1.valid or not t2.valid:
+            return False
+
+        # comparing nullable types to `nil`
+        elif t1.kind == Kind.Nil and t2.kind in NULLABLE_KINDS:
+            return True
+
+        # same thing as they switched place
+        elif t2.kind == Kind.Nil and t1.kind in NULLABLE_KINDS:
+            return True
+
+        # must be assignable one way or another
+        elif not self._is_assignable(t1, t2) and not self._is_assignable(t2, t1):
+            return False
+
+        # boolean values are comparable
+        # integer values are comparable and ordered, in the usual way
+        # floating-point values are comparable and ordered, as defined by the IEEE-754 standard
+        # complex values are comparable
+        # string values are comparable and ordered, lexically byte-wise
+        # pointer values are comparable
+        # channel values are comparable
+        # interface values are comparable
+        elif t1.kind == t2.kind and t1.kind in COMPARABLE_KINDS:
+            return True
+
+        # real numbers are comparable if either of them is untyped
+        elif t1.kind in REAL_KINDS and t2.kind in REAL_KINDS:
+            return isinstance(t1, UntypedType) or isinstance(t2, UntypedType)
+
+        # a value x of non-interface type X and a value t of interface type T
+        # are comparable when values of type X are comparable and X implements T
+        elif t1.kind != Kind.Interface and t2.kind == Kind.Interface:
+            return self._is_comparable(t1, t1) and \
+                   self._is_implements(t1, cast(InterfaceType, self._type_deref(t2)))
+
+        # same thing as they switched place
+        elif t1.kind == Kind.Interface and t2.kind != Kind.Interface:
+            return self._is_comparable(t2, t2) and \
+                   self._is_implements(t2, cast(InterfaceType, self._type_deref(t1)))
+
+        # struct values are comparable if all their fields are comparable
+        elif t1.kind == Kind.Struct and t2.kind == Kind.Struct:
+            for field in cast(StructType, self._type_deref(t1)).fields:
+                if not self._is_comparable(field.type, field.type):
+                    return False
+            else:
+                return True
+
+        # array values are comparable if values of the array element type are
+        # comparable
+        elif t1.kind == Kind.Array and t2.kind == Kind.Array:
+            return self._is_comparable(
+                cast(ArrayType, self._type_deref(t1)).elem,
+                cast(ArrayType, self._type_deref(t2)).elem,
+            )
+
+        # otherwise, they are not comparable
+        else:
+            return False
+
+    def _is_implements(self, vt: Type, intf: InterfaceType) -> bool:
+        """
+        A variable of interface type can store a value of any type with a
+        method set that is any superset of the interface. Such a type is said
+        to implement the interface.
+        """
+
+        # method buffer
+        tfs = []
+        vtype = vt
+
+        # pointer types, add method for it's element types
+        if isinstance(vtype, PtrType):
+            vtype = vtype.elem
+            tfs.extend(vtype.pfuncs)
+
+        # add type methods
+        ifs = intf.tfuncs[:]
+        tfs.extend(vtype.tfuncs)
+
+        # sort them by name
+        i = j = 0
+        ifs.sort(key = lambda x: x.name)
+        tfs.sort(key = lambda x: x.name)
+
+        # compare each method
+        while i < len(ifs) and j < len(tfs):
+            i += 1 if ifs[i] == tfs[j] else 0
+            j += 1
+
+        # `vt` implements `intf` iff `tfs` is a superset of `ifs`
+        return i == len(ifs)
+
     ### Specialized Type Inferrers ###
 
     def _infer_map_type(self, ctx: Context, vtype: MapType, node: MapTypeNode):
         key = node.key
         ktype = self._infer_type(ctx, key)
 
-        # TODO: check the key type
+        # the key type must be comparable
+        if not self._is_comparable(ktype, ktype):
+            raise self._error(key, 'invalid key type %s' % ktype)
 
         # infer the element, and complete the type
         vtype.key = ktype
@@ -1230,11 +1489,55 @@ class Inferrer:
         vtype.elem = etype
         vtype.valid = True
 
-    def _infer_function_type(self, ctx: Context, vtype: FuncType, node: FunctionTypeNode):
-        pass    # TODO: function type
+    def _infer_function_type(self, ctx: Context, vtype: FuncType, node: FunctionType):
+        vtype.var = node.type.var
+        vtype.flags = FunctionOptions(0)
 
-    def _infer_interface_type(self, ctx: Context, vtype: InterfaceTypeNode, node: InterfaceTypeNode):
-        pass    # TODO: interface type
+        # inferring each args
+        for arg in node.type.args:
+            vtype.args.append(self._infer_type(ctx, arg.type))
+
+        # inferring each return values
+        for ret in node.type.rets:
+            vtype.rets.append(self._infer_type(ctx, ret.type))
+
+    def _infer_interface_type(self, ctx: Context, vtype: InterfaceType, node: InterfaceTypeNode):
+        for decl in node.decls:
+            if isinstance(decl, NamedTypeNode):
+                self._infer_interface_type_embed(ctx, vtype, decl)
+            elif isinstance(decl, InterfaceMethodNode):
+                self._infer_interface_type_method(ctx, vtype, decl)
+            else:
+                raise SystemError('invalid interface method node')
+
+    def _infer_interface_type_embed(self, ctx: Context, vtype: InterfaceType, decl: NamedTypeNode):
+        tname = decl.name.value
+        mtype = self._type_deref(self._infer_type(ctx, decl))
+
+        # must be an interface
+        if mtype.kind != Kind.Interface:
+            raise self._error(decl, 'interface contains embedded non-interface: ' + tname)
+
+        # add all it's methods
+        for func in mtype.tfuncs:
+            for item in vtype.tfuncs:
+                if item.name == func.name:
+                    raise self._error(decl.name, 'duplicated interface method: ' + func.name)
+            else:
+                vtype.tfuncs.append(func)
+
+    def _infer_interface_type_method(self, ctx: Context, vtype: InterfaceType, decl: InterfaceMethodNode):
+        ftype = FuncType()
+        fname = decl.name.value
+
+        # check for method duplications
+        for func in vtype.tfuncs:
+            if func.name == fname:
+                raise self._error(decl.name, 'duplicated interface method: ' + fname)
+
+        # infer the function type
+        self._infer_function_type(ctx, ftype, decl)
+        vtype.tfuncs.append(Method(fname, ftype))
 
     __type_factory__ = {
         MapTypeNode       : MapType,
@@ -1328,7 +1631,6 @@ class Inferrer:
                 spec.vt = val.vt
 
                 # declare the symbol
-                print('%s %s = %s' % (key, val.vt, val.value))  # FIXME: remove this
                 ret.append(sym)
                 self._declare(ctx.pkg, key, name, sym)
 

@@ -12,7 +12,7 @@ from .flags import ChannelOptions
 from .flags import FunctionOptions
 
 class Kind(IntEnum):
-    Invalid       = 0
+    Nil           = 0
     Bool          = 1
     Int           = 2
     Int8          = 3
@@ -39,10 +39,13 @@ class Kind(IntEnum):
     String        = 24
     Struct        = 25
     UnsafePointer = 26
+    Named         = 255
 
 class Type(metaclass = StrictFields):
-    kind  : Kind
-    valid : bool
+    kind   : Kind
+    valid  : bool
+    tfuncs : List['Method']
+    pfuncs : List['Method']
 
     __noinit__ = {
         'kind',
@@ -63,10 +66,12 @@ class Type(metaclass = StrictFields):
         return not (self == other)
 
     def __eq__(self, other: 'Type') -> bool:
-        if not isinstance(other, Type):
-            return False
-        else:
-            return self.valid and other.valid and self.kind == other.kind
+        return isinstance(other, Type) and \
+               self.valid and \
+               other.valid and \
+               self.kind == other.kind and \
+               self.tfuncs == other.tfuncs and \
+               self.pfuncs == other.pfuncs
 
     def _to_repr(self, _path: FrozenSet['Type']) -> str:
         if id(self) in _path:
@@ -76,6 +81,17 @@ class Type(metaclass = StrictFields):
 
     def _get_repr(self, _path: FrozenSet['Type']) -> str:
         return self.kind.name.lower()
+
+class Method(metaclass = StrictFields):
+    name: str
+    type: 'FuncType'
+
+    def __init__(self, name: str, mtype: 'FuncType'):
+        self.name = name
+        self.type = mtype
+
+    def __eq__(self, val: 'Method') -> bool:
+        return self.name == val.name and self.type == val.type
 
 class PtrType(Type):
     elem: Optional[Type]
@@ -88,7 +104,9 @@ class PtrType(Type):
         return hash(self.elem)
 
     def __eq__(self, val: 'Type') -> bool:
-        return super().__eq__(val) and self.elem == cast(PtrType, val).elem
+        return super().__eq__(val) and \
+               isinstance(val, PtrType) and \
+               self.elem == cast(PtrType, val).elem
 
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
         return '*%s' % self.elem._to_repr(_path)
@@ -107,6 +125,7 @@ class MapType(Type):
 
     def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
+               isinstance(val, MapType) and \
                self.key == cast(MapType, val).key and \
                self.elem == cast(MapType, val).elem
 
@@ -131,6 +150,7 @@ class FuncType(Type):
 
     def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
+               isinstance(val, FuncType) and \
                self.var == cast(FuncType, val).var and \
                self.args == cast(FuncType, val).args and \
                self.rets == cast(FuncType, val).rets and \
@@ -156,6 +176,7 @@ class ChanType(Type):
 
     def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
+               isinstance(val, ChanType) and \
                self.dir == cast(ChanType, val).dir and \
                self.elem == cast(ChanType, val).elem
 
@@ -178,6 +199,7 @@ class ArrayType(Type):
 
     def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
+               isinstance(val, ArrayType) and \
                self.len == cast(ArrayType, val).len and \
                self.elem == cast(ArrayType, val).elem
 
@@ -198,67 +220,39 @@ class SliceType(Type):
         return hash(self.elem)
 
     def __eq__(self, val: 'Type') -> bool:
-        return super().__eq__(val) and self.elem == cast(SliceType, val).elem
+        return super().__eq__(val) and \
+               isinstance(val, SliceType) and \
+               self.elem == cast(SliceType, val).elem
 
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
         return '[]%s' % self.elem._to_repr(_path)
 
 class StructType(Type):
-    size   : int
-    align  : int
-    fields : List['StructField']
+    fields: List['StructField']
 
     def __init__(self):
-        self.size = 0
-        self.align = 0
         super().__init__(Kind.Struct, False)
-
-    def __hash__(self) -> int:
-        return hash((self.size, self.align))
 
     def __eq__(self, val: 'Type') -> bool:
         return super().__eq__(val) and \
-               self.size == cast(StructType, val).size and \
-               self.align == cast(StructType, val).align and \
+               isinstance(val, StructType) and \
                self.fields == cast(StructType, val).fields
 
 class StructField(metaclass = StrictFields):
-    name     : str
-    type     : Type
-    tags     : Optional[str]
-    size     : int
-    align    : int
-    offset   : int
-    embedded : bool
+    name  : str
+    type  : Type
+    tags  : Optional[str]
+    embed : bool
 
     def __eq__(self, val: 'StructField') -> bool:
         return self.name == val.name and \
                self.type == val.type and \
                self.tags == val.tags and \
-               self.size == val.size and \
-               self.align == val.align and \
-               self.offset == val.offset and \
-               self.embedded == val.embedded
+               self.embed == val.embed
 
 class InterfaceType(Type):
-    methods: List['InterfaceMethod']
-
     def __init__(self):
         super().__init__(Kind.Interface)
-
-    def __eq__(self, val: 'Type') -> bool:
-        return super().__eq__(val) and self.methods == cast(InterfaceType, val).methods
-
-class InterfaceMethod(metaclass = StrictFields):
-    name: str
-    type: FuncType
-
-    def __init__(self, name: str, mtype: FuncType):
-        self.name = name
-        self.type = mtype
-
-    def __eq__(self, val: 'InterfaceMethod') -> bool:
-        return self.name == val.name and self.type == val.type
 
 class NamedType(Type):
     name: str
@@ -267,21 +261,21 @@ class NamedType(Type):
     def __init__(self, name: str, rtype: Optional[Type] = None):
         self.name = name
         self.type = rtype
-        super().__init__(Kind.Invalid, False)
+        super().__init__(Kind.Named, False)
 
     def __hash__(self) -> int:
         return hash(self.type)
 
     def __eq__(self, val: 'Type') -> bool:
         if not isinstance(val, NamedType):
-            return self.type == val
+            return self.type is val
         else:
-            return self.type == val.type
+            return self.type is val.type
 
     @property
     def kind(self) -> Kind:
         if self.type is None:
-            return Kind.Invalid
+            return Kind.Named
         else:
             return self.type.kind
 
@@ -303,6 +297,7 @@ class UntypedType(Type):
         return 'untyped %s' % super()._get_repr(_path)
 
 class Types:
+    Nil            = Type(Kind.Nil)
     Bool           = Type(Kind.Bool)
     Int            = Type(Kind.Int)
     Int8           = Type(Kind.Int8)

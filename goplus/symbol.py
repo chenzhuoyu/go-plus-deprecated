@@ -13,9 +13,9 @@ from .types import Type
 from .types import Types
 from .utils import StrictFields
 
+from .types import Method
 from .types import FuncType
 from .types import InterfaceType
-from .types import InterfaceMethod
 
 class SymbolKind(Enum):
     VAR     = 'var'
@@ -46,9 +46,9 @@ class Symbols:
     class Const(Symbol):   kind = SymbolKind.CONST
     class Package(Symbol): kind = SymbolKind.PACKAGE
 
-def _make_intf(methods: List[InterfaceMethod]) -> InterfaceType:
+def _make_intf(methods: List[Method]) -> InterfaceType:
     ret = InterfaceType()
-    ret.methods = methods
+    ret.tfuncs = methods
     return ret
 
 def _make_func(args: List[Type], rets: List[Type]) -> FuncType:
@@ -76,7 +76,7 @@ class Functions:
     PrintLn = Symbols.Func('println' , FuncType())
 
 class Interfaces:
-    Error = _make_intf([InterfaceMethod(
+    Error = _make_intf([Method(
         'Error',
         _make_func([], [Types.String])
     )])
@@ -89,6 +89,7 @@ class ConstValue(Symbols.Const):
         super().__init__(name, vtype)
 
 BUILTIN_SYMBOLS = {
+    'nil'        : ConstValue('nil'   , Types.Nil, None),
     'true'       : ConstValue('true'  , Types.UntypedBool, True),
     'false'      : ConstValue('false' , Types.UntypedBool, False),
 
