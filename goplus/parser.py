@@ -1843,7 +1843,7 @@ class Parser:
         # bare identifiers for remaining consts, just copy the previous expressions
         elif consts and self.iota > 0:
             assert ret
-            val.values = ret[-1].values[:]
+            val.values = [v.clone() for v in ret[-1].values]
 
         # otherwise a type declaration is required
         elif not val.type:

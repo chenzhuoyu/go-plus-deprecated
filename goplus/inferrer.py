@@ -28,11 +28,20 @@ from .ast import Complex
 from .ast import Package
 from .ast import Operator
 
-from .ast import Primary
+from .ast import Lambda
 from .ast import Constant
+from .ast import Composite
+from .ast import Conversion
+
+from .ast import Index
+from .ast import Slice
 from .ast import Selector
 from .ast import Arguments
-from .ast import Conversion
+from .ast import Assertion
+
+from .ast import Operand
+from .ast import Primary
+from .ast import Modifier
 from .ast import Expression
 
 from .ast import InitSpec
@@ -843,10 +852,10 @@ class Inferrer:
     def _make_rune(self, vtype: Type, value: Constant) -> Constant:
         return self._make_typed(value, chr(value.value).encode('utf-8'), vtype)
 
-    def _make_typed(self, val: Node, new: TokenValue, vt: Type) -> Constant:
-        vk = CONSTRUCTING_MAPS[vt.kind].kind
-        ret = CONSTRUCTING_MAPS[vt.kind](Token(val.col, val.row, val.file, vk, new))
-        ret.vt = vt
+    def _make_typed(self, val: Node, value: TokenValue, vtype: Type) -> Constant:
+        vk = CONSTRUCTING_MAPS[vtype.kind].kind
+        ret = CONSTRUCTING_MAPS[vtype.kind](Token(val.col, val.row, val.file, vk, value))
+        ret.vt = vtype
         return ret
 
     def _rune_checked(self, rune: Type, string: Type) -> bool:
@@ -981,7 +990,26 @@ class Inferrer:
         else:
             return self.__binary_ops__[op.value](self, lhs, rhs)
 
-    ### Expression Evaluators ###
+    ### Expression Reducers ###
+
+    Component = Union[
+        Operand,
+        Primary,
+    ]
+
+    def _to_const(self, val: Component) -> Optional[Constant]:
+        if isinstance(val, Constant.__args__):
+            return val
+        elif isinstance(val, Primary):
+            return self._to_const(val.val)
+        elif val.op or val.right:
+            return None
+        elif not isinstance(val.left, Primary):
+            return self._to_const(val.left)
+        elif val.left.mods:
+            return None
+        else:
+            return self._to_const(val.left.val)
 
     def _find_val(self, syms: List[Symbol], name: Name) -> Symbol:
         for sym in syms:
@@ -990,7 +1018,29 @@ class Inferrer:
         else:
             raise SystemError('invalid symbol table')
 
-    def _eval_name(self, ctx: Context, name: Name) -> Constant:
+    def _wrap_prim(self, val: Primary) -> Expression:
+        ret = Expression(Token(val.col, val.row, val.file, TokenType.End, None))
+        ret.left = val
+        return ret
+
+    def _wrap_value(self, val: Operand) -> Expression:
+        prim = Primary(Token(val.col, val.row, val.file, TokenType.End, None))
+        prim.val = val
+        return self._wrap_prim(prim)
+
+    def _wrap_selector(self, base: Name, attr: Name) -> Expression:
+        prim = Primary(Token(base.col, base.row, base.file, TokenType.End, None))
+        prop = Selector(Token(attr.col, attr.row, attr.file, TokenType.Name, attr.value))
+
+        # set primary base and selector
+        prim.val = base
+        prop.attr = attr
+
+        # add to modifiers
+        prim.mods.append(prop)
+        return self._wrap_prim(prim)
+
+    def _reduce_name(self, ctx: Context, name: Name) -> Operand:
         key = name.value
         sym = ctx.scope.resolve(key)
 
@@ -1005,34 +1055,43 @@ class Inferrer:
                     sym = self._find_val(self._infer_const_spec(rctx, spec), name)
                     break
 
-        # still not resolved
+            # still not resolved, try variable names
+            if sym is None:
+                for spec in file.vars:
+                    if any(item.value == name.value for item in spec.names):
+                        sym = self._find_val(self._infer_var_spec(rctx, spec), name)
+                        break
+
+        # still not resolved, try iota if possible
         if sym is None:
             if key == 'iota' and self.iota is not None:
                 sym = ConstValue('iota', Types.UntypedInt, self.iota)
             else:
-                raise self._error(name, 'unresolved constant: %s' % key)
+                raise self._error(name, 'unresolved identifier: %s' % key)
 
-        # must be a constant value
-        if not isinstance(sym, ConstValue):
-            raise SystemError('invalid const value symbol')
-        else:
+        # reduce as needed
+        if isinstance(sym, ConstValue):
             return self._make_typed(name, sym.value, sym.type)
 
-    def _eval_args(self, ctx: Context, args: Arguments) -> Constant:
-        if len(args.args) != 1:
-            raise self._error(args, 'must be a constant expression')
-        elif isinstance(args.args[0], Expression):
-            return self._eval_expr(ctx, args.args[0])
-        elif isinstance(args.args[0], NamedTypeNode):
-            return self._eval_type(ctx, args.args[0])
-        else:
-            raise self._error(args, 'must be a constant expression')
+        # set the identifier type
+        name.vt = sym.type
+        return name
 
-    def _eval_expr(self, ctx: Context, expr: Expression) -> Constant:
+    def _reduce_expr(self, ctx: Context, expr: Expression) -> Operand:
         if isinstance(expr.left, Expression):
-            lhs = self._eval_expr(ctx, expr.left)
+            reducer = self._reduce_expr
         else:
-            lhs = self._eval_primary(ctx, expr.left)
+            reducer = self._reduce_primary
+
+        # reduce lhs expression
+        lhs = expr.left
+        lhs = reducer(ctx, lhs)
+
+        # update lhs expression
+        if isinstance(lhs, (Primary, Expression)):
+            expr.left = lhs
+        else:
+            expr.left = self._wrap_value(lhs)
 
         # no operator is present, must be a single value
         if expr.op is None:
@@ -1041,182 +1100,212 @@ class Inferrer:
             else:
                 return lhs
 
-        # apply corresponding operators
+        # apply corresponding operators if the operand is constant
         if expr.right is None:
-            return self._apply_unary(lhs, expr.op)
+            lhs = self._to_const(lhs)
+            return expr if not lhs else self._apply_unary(lhs, expr.op)
+
+        # reduce rhs expression
+        rhs = expr.right
+        rhs = expr.right = self._reduce_expr(ctx, rhs)
+
+        # update rhs expression
+        if isinstance(rhs, Primary):
+            expr.right = self._wrap_prim(rhs)
+        elif isinstance(rhs, Expression):
+            expr.right = rhs
         else:
-            return self._apply_binary(lhs, self._eval_expr(ctx, expr.right), expr.op)
+            expr.right = self._wrap_value(rhs)
 
-    def _eval_type(self, ctx: Context, vtype: NamedTypeNode) -> Constant:
-        name = vtype.name
-        package = vtype.package
+        # try converting to consts
+        lhs = self._to_const(lhs)
+        rhs = self._to_const(rhs)
 
-        # no package specified
-        if package is None:
-            return self._eval_name(ctx, name)
-
-        # resolve the symbol from package
-        scope = ctx.scope
-        symbol = self._resolve(scope, package, name)
-
-        # must be constant values
-        if not isinstance(symbol, ConstValue):
-            raise self._error(name, '%s.%s is not a constant' % (package.value, name.value))
+        # reduce if both operands are constant
+        if not lhs or not rhs:
+            return expr
         else:
-            return self._make_typed(name, symbol.value, symbol.type)
+            return self._apply_binary(lhs, rhs, expr.op)
 
-    def _eval_const(self, _ctx: Context, const: Constant) -> Constant:
+    def _reduce_basic(self, ctx: Context, val: Operand) -> Operand:
+        if isinstance(val, Name):
+            return self._reduce_name(ctx, val)
+        elif isinstance(val, Lambda):
+            raise NotImplementedError("_reduce_singular().Lambda")      # TODO: implement this
+        elif isinstance(val, Constant.__args__):
+            return self._reduce_const(ctx, val)
+        elif isinstance(val, Composite):
+            raise NotImplementedError("_reduce_singular().Composite")   # TODO: implement this
+        elif isinstance(val, Conversion):
+            return self._reduce_conversion(ctx, val)
+        elif isinstance(val, Expression):
+            return self._reduce_expr(ctx, val)
+        else:
+            raise SystemError('incorrect singular reducer state')
+
+    def _reduce_const(self, _ctx: Context, const: Constant) -> Operand:
         const.vt = self._type_of(const)
         return const
 
-    def _eval_primary(self, ctx: Context, primary: Primary) -> Constant:
-        if len(primary.mods) > 2:
-            raise self._error(primary, 'must be a constant expression')
-        elif not primary.mods:
-            return self._eval_singular(ctx, primary)
-        else:
-            return self._eval_modifiers(ctx, primary)
-
-    def _eval_singular(self, ctx: Context, primary: Primary) -> Constant:
-        if isinstance(primary.val, Name):
-            return self._eval_name(ctx, primary.val)
-        elif isinstance(primary.val, Constant.__args__):
-            return self._eval_const(ctx, primary.val)
-        elif isinstance(primary.val, Conversion):
-            return self._eval_conversion(ctx, primary.val)
-        else:
-            raise self._error(primary, 'must be a constant expression')
-
-    def _eval_modifiers(self, ctx: Context, primary: Primary) -> Constant:
+    def _reduce_primary(self, ctx: Context, primary: Primary) -> Component:
         val = primary.val
+        val = primary.val = self._reduce_basic(ctx, val)
+
+        # reduce every modifier
+        for mod in primary.mods:
+            if isinstance(mod, Index):
+                self._reduce_modifier_index(ctx, mod)
+            elif isinstance(mod, Slice):
+                self._reduce_modifier_slice(ctx, mod)
+            elif isinstance(mod, Selector):
+                continue
+            elif isinstance(mod, Arguments):
+                self._reduce_modifier_arguments(ctx, mod)
+            elif isinstance(mod, Assertion):
+                self._reduce_modifier_assertion(ctx, mod)
+            else:
+                raise SystemError('incorrect primary reducer state')
+
+        # modifiers
         mods = primary.mods
+        modc = len(mods)
 
-        # must be a name
-        if not isinstance(val, Name):
-            raise self._error(primary, 'must be a constant expression')
+        # cross-package constant referencing or same-package type conversion
+        if modc == 1 and isinstance(val, Name):
+            mod0 = mods[0]
+            scope = ctx.scope
 
-        # might be a type conversion with package name
-        if len(mods) == 2:
-            if not isinstance(mods[0], Selector) or \
-               not isinstance(mods[1], Arguments):
-                raise self._error(primary, 'must be a constant expression')
-            else:
-                return self._eval_conversion_package(
-                    ctx   = ctx,
-                    pkg   = val,
-                    name  = mods[0].attr,
-                    value = self._eval_args(ctx, mods[1]),
-                )
+            # constant referencing must be in the form of "x.y"
+            if isinstance(mod0, Selector):
+                name = mod0.attr
+                symbol = self._resolve(scope, val, name)
 
-        # might be a cross-package identifier reference
-        if isinstance(mods[0], Selector):
-            name = mods[0].attr
-            symbol = self._resolve(ctx.scope, val, name)
+                # should be a constant value
+                if isinstance(symbol, ConstValue):
+                    return self._make_typed(val, symbol.value, symbol.type)
 
-            # must be constant values
-            if not isinstance(symbol, ConstValue):
-                raise self._error(val, '%s.%s is not a constant' % (val.value, name.value))
-            else:
-                return self._make_typed(val, symbol.value, symbol.type)
+            # type conversion must be in the form of "x(y)"
+            elif isinstance(mod0, Arguments):
+                name = val.value
+                symbol = scope.resolve(name)
+                result = self._reduce_primary_cast(mod0, symbol)
 
-        # must be a function call at this point
-        if not isinstance(mods[0], Arguments):
-            raise self._error(primary, 'must be a constant expression')
+                # check for reduction result
+                if result is not None:
+                    return result
 
-        # resolve the function
-        mod = mods[0]
-        sym = ctx.scope.resolve(primary.val.value)
+        # cross-package type conversion
+        if modc == 2 and isinstance(val, Name):
+            mod0 = mods[0]
+            mod1 = mods[1]
 
-        # might be a type conversion of a bare name
-        if isinstance(sym, Symbols.Type):
-            return self._cast_to(sym.type, self._eval_args(ctx, mod))
+            # type conversion must be in the form of "x.y(z)"
+            if isinstance(mod0, Selector) and isinstance(mod1, Arguments):
+                scope = ctx.scope
+                symbol = self._resolve(scope, val, mod0.attr)
+                result = self._reduce_primary_cast(mod1, symbol)
 
-        # must be a constant function
-        if sym not in self.__function_map__:
-            raise self._error(primary, 'must be a constant expression')
-        else:
-            return self.__function_map__[sym](ctx, primary, mod)
+                # check for reduction result
+                if result is not None:
+                    return result
 
-    def _eval_function_cap(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
-        pass    # TODO: eval cap
+        # simple function call
+        if modc == 1 and isinstance(val, Arguments):
+            print('simple function call')   # TODO: simple function call
 
-    def _eval_function_len(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
-        pass    # TODO: eval len
+        # otherwise it's not reducable for now
+        return primary
 
-    def _eval_function_imag(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
-        pass    # TODO: eval imag
-
-    def _eval_function_real(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
-        pass    # TODO: eval real
-
-    def _eval_function_complex(self, ctx: Context, primary: Primary, mod: Arguments) -> Constant:
+    def _reduce_primary_cast(self, mod: Arguments, symbol: Symbol) -> Optional[Operand]:
         args = mod.args
         argc = len(args)
 
-        # must not be a variadic call
-        if mod.var:
-            raise self._error(primary, 'must be a constant expression')
-
-        # must call with 2 arguments
-        if argc != 2:
-            raise self._error(primary, '\'complex\' function takes exact 2 arguments')
-
-        # both must all be expressions
-        if not isinstance(args[0], Expression) or not isinstance(args[1], Expression):
-            raise self._error(primary, 'must be a constant expression')
-
-        # real and imaginary part
-        real = self._eval_expr(ctx, args[0])
-        imag = self._eval_expr(ctx, args[1])
-
-        # real part must be ints or floats
-        if real.kind not in (TokenType.Int, TokenType.Float):
-            raise self._error(real, 'real part of a complex number must be ints or floats')
-
-        # imaginary part must be ints or floats
-        if imag.kind not in (TokenType.Int, TokenType.Float):
-            raise self._error(real, 'imaginary part of a complex number must be ints or floats')
-
-        # check token value type
-        if not isinstance(real.value, (int, float)) or not isinstance(imag.value, (int, float)):
-            raise SystemError('invalid token value')
-
-        # infer the result type, and construct the complex value
-        vt = self._type_coerce(real.vt, imag.vt)
-        val = complex(float(real.value), float(imag.value))
-
-        # check the result type
-        if vt is None:
-            raise self._error(primary, 'invalid complex component type')
-
-        # build the result
-        ret = Complex(Token(primary.col, primary.row, primary.file, TokenType.Complex, val))
-        ret.vt = Types.UntypedComplex if isinstance(vt, UntypedType) else Types.Complex128
-        return ret
-
-    __function_map__ = {
-        Functions.Cap     : _eval_function_cap,
-        Functions.Len     : _eval_function_len,
-        Functions.Imag    : _eval_function_imag,
-        Functions.Real    : _eval_function_real,
-        Functions.Complex : _eval_function_complex,
-    }
-
-    def _eval_conversion(self, ctx: Context, conversion: Conversion) -> Constant:
-        return self._cast_to(
-            value = self._eval_expr(ctx, conversion.value),
-            vtype = self._infer_type(ctx, conversion.type),
-        )
-
-    def _eval_conversion_package(self, ctx: Context, pkg: Name, name: Name, value: Constant) -> Constant:
-        scope = ctx.scope
-        symbol = self._resolve(scope, pkg, name)
-
-        # check the type, and now it's the same as "simple" conversion
+        # should be a type
         if not isinstance(symbol, Symbols.Type):
-            raise self._error(name, '%s.%s is not a type' % (pkg.value, name.value))
+            return None
+
+        # must have exact 1 argument, and it must be an expression
+        if argc != 1 or not isinstance(args[0], Expression):
+            raise self._error(args[0], 'invalid type conversion')
+
+        # try converting to constant
+        expr = args[0]
+        expr = self._to_const(expr)
+
+        # try reducing as constant conversion only if all conditions are met
+        if expr is None:
+            return None
         else:
-            return self._cast_to(symbol.type, value)
+            return self._cast_to(symbol.type, expr)
+
+    def _reduce_modifier_index(self, ctx: Context, mod: Index):
+        mod.expr = self._wrap_value(self._reduce_expr(ctx, mod.expr))
+
+    def _reduce_modifier_slice(self, ctx: Context, mod: Slice):
+        if mod.pos: mod.pos = self._wrap_value(self._reduce_expr(ctx, mod.pos))
+        if mod.len: mod.len = self._wrap_value(self._reduce_expr(ctx, mod.len))
+        if mod.cap: mod.cap = self._wrap_value(self._reduce_expr(ctx, mod.cap))
+
+    def _reduce_modifier_arguments(self, ctx: Context, mod: Arguments):
+        for i, arg in enumerate(mod.args):
+            if isinstance(arg, Expression):
+                mod.args[i] = self._wrap_value(self._reduce_expr(ctx, arg))
+            elif isinstance(arg, NamedTypeNode):
+                mod.args[i] = self._reduce_modifier_arguments_type(ctx, arg)
+            elif isinstance(arg, TypeNode.__args__):
+                self._infer_type(ctx, arg)
+            else:
+                raise SystemError('incorrect arguments reducer state')
+
+    def _reduce_modifier_arguments_type(self, ctx: Context, arg: NamedTypeNode) -> Union[TypeNode, Expression]:
+        name = arg.name
+        package = arg.package
+
+        # resolve the symbol
+        if package is None:
+            symbol = ctx.scope.resolve(name.value)
+        else:
+            symbol = self._resolve(ctx.scope, package, name)
+
+        # it's a constant, make a reduction
+        if isinstance(symbol, ConstValue):
+            return self._wrap_value(self._make_typed(
+                val   = arg,
+                vtype = symbol.type,
+                value = symbol.value,
+            ))
+
+        # it's a type, infer it
+        elif isinstance(symbol, Symbols.Type):
+            self._infer_type(ctx, arg)
+            return arg
+
+        # variables and functions, make a name reference
+        elif isinstance(symbol, (Symbols.Var, Symbols.Func)):
+            if package is None:
+                return self._wrap_value(name)
+            else:
+                return self._wrap_selector(package, name)
+
+        # other kind of stuff
+        else:
+            raise self._error(name, 'identifier is not a constant, variable, function or type')
+
+    def _reduce_modifier_assertion(self, ctx: Context, mod: Assertion):
+        self._infer_type(ctx, mod.type)
+
+    def _reduce_conversion(self, ctx: Context, conversion: Conversion) -> Operand:
+        vtype = self._infer_type(ctx, conversion.type)
+        value = self._reduce_expr(ctx, conversion.value)
+        const = self._to_const(value)
+
+        # reduce as needed
+        if const is not None:
+            return self._cast_to(vtype, const)
+
+        # set the result type
+        value.vt = vtype
+        return value
 
     ### Type Inferrers ###
 
@@ -1446,11 +1535,11 @@ class Inferrer:
         vtype.elem = self._infer_type(ctx, node.elem)
 
     def _infer_array_type(self, ctx: Context, vtype: ArrayType, node: ArrayTypeNode):
-        value = self._eval_expr(ctx, node.len)
-        etype = self._infer_type(ctx, node.elem)
+        elem = self._infer_type(ctx, node.elem)
+        value = self._to_const(self._reduce_expr(ctx, node.len))
 
         # array type must be valid
-        if not etype.valid:
+        if not elem.valid:
             raise self._error(node.elem, 'invalid recursive type')
 
         # must be an integer expression
@@ -1459,7 +1548,7 @@ class Inferrer:
 
         # complete the type
         vtype.len = value.value
-        vtype.elem = etype
+        vtype.elem = elem
         vtype.valid = True
 
     def _infer_slice_type(self, ctx: Context, vtype: SliceType, node: SliceTypeNode):
@@ -1613,7 +1702,11 @@ class Inferrer:
             # evaluate all expressions, and resolve each symbol
             for name, value in zip(spec.names, spec.values):
                 key = name.value
-                val = self._eval_expr(ctx, value)
+                val = self._to_const(self._reduce_expr(ctx, value))
+
+                # check for constant expression
+                if val is None:
+                    raise self._error(value, 'must be a constant expression')
 
                 # optional type assertion
                 if vtype is not None:
@@ -1631,6 +1724,7 @@ class Inferrer:
                 spec.vt = val.vt
 
                 # declare the symbol
+                print('%s %s = %s' % (key, val.vt, val.value))  # FIXME: remove this
                 ret.append(sym)
                 self._declare(ctx.pkg, key, name, sym)
 

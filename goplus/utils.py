@@ -2,9 +2,6 @@
 
 import platform
 
-from types import CodeType
-from types import FunctionType
-
 from typing import Any
 from typing import Set
 from typing import Dict
@@ -14,7 +11,9 @@ from typing import Union
 from typing import Callable
 from typing import Optional
 
+from types import FunctionType
 from bytecode import CompilerFlags
+
 from .assembler import Assembler
 
 class StrictFields(type):
@@ -22,9 +21,6 @@ class StrictFields(type):
         noinit = ns.pop('__noinit__', set())
         typing = ns.get('__annotations__', {})
         return super().__new__(mcs, name, bases, _build_attrs(ns, bases, typing, noinit))
-
-_VA = CompilerFlags.VARARGS
-_KW = CompilerFlags.VARKEYWORDS
 
 # this differs between implementations
 if platform.python_implementation() == 'PyPy':
@@ -39,26 +35,6 @@ else:
             return vtype.__origin__
         except AttributeError:
             return vtype
-
-# assembler for the function factory
-_asm = Assembler('<wrapper>')
-_asm.instrs.argcount = 1
-_asm.instrs.argnames = ['code']
-
-# use the `MAKE_FUNCTION` bytecode to build a function
-_asm.LOAD_FAST('code')
-_asm.LOAD_CONST('__init__')
-_asm.MAKE_FUNCTION(0)
-_asm.RETURN_VALUE()
-
-# assemble the factory
-_fac = _asm.assemble()
-del _asm
-
-def _make_func(co: CodeType) -> FunctionType:
-    return eval(_fac, {}, {
-        'code': co,
-    })
 
 def _make_init(asm: Assembler, name: str, vtype: Any, real: Any) -> Optional[Callable[[], Any]]:
     if real is bool:
@@ -106,7 +82,7 @@ def _make_init(asm: Assembler, name: str, vtype: Any, real: Any) -> Optional[Cal
 
 def _build_attrs(attrs: Dict[str, Any], bases: Tuple[Type], fields: Dict[str, Any], noinit: Set[str]) -> Dict[str, Any]:
     asm = Assembler('<compiled>')
-    asm.instrs.flags = _VA | _KW
+    asm.instrs.flags = CompilerFlags.VARARGS | CompilerFlags.VARKEYWORDS
     asm.instrs.argcount = 1
     asm.instrs.argnames = ['self', 'args', 'kwargs']
 
@@ -145,5 +121,5 @@ def _build_attrs(attrs: Dict[str, Any], bases: Tuple[Type], fields: Dict[str, An
         asm.RETURN_VALUE()
 
     # create a new `__init__` function
-    attrs['__init__'] = _make_func(asm.assemble())
+    attrs['__init__'] = FunctionType(asm.assemble(), {}, '__init__')
     return attrs
