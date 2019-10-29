@@ -5,6 +5,7 @@ import inspect
 
 from typing import Any
 from typing import Set
+from typing import cast
 from typing import Dict
 from typing import List
 from typing import Union
@@ -89,8 +90,13 @@ class Node(metaclass = StrictFields):
     def _build_dict(self, path: Set[int], val: Dict[Any, Any]) -> Dict[Any, Any]:
         return {key: self._build_val(path, value) for key, value in val.items()}
 
-    def clone(self):
-        raise NotImplementedError
+    def clone(self) -> 'Node':
+        ret = self.__class__.__new__(self.__class__)
+        ret.vt = self.vt
+        ret.col = self.col
+        ret.row = self.row
+        ret.file = self.file
+        return ret
 
 ### Basic Elements ###
 
@@ -144,7 +150,7 @@ class MapType(Node):
     elem : 'Type'
 
     def clone(self) -> 'MapType':
-        ret = MapType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(MapType, super().clone())
         ret.key = self.key.clone()
         ret.elem = self.elem.clone()
         return ret
@@ -154,7 +160,7 @@ class ArrayType(Node):
     elem : 'Type'
 
     def clone(self) -> 'ArrayType':
-        ret = ArrayType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(ArrayType, super().clone())
         ret.len = self.len.clone()
         ret.elem = self.elem.clone()
         return ret
@@ -163,7 +169,7 @@ class SliceType(Node):
     elem: 'Type'
 
     def clone(self) -> 'SliceType':
-        ret = SliceType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(SliceType, super().clone())
         ret.elem = self.elem.clone()
         return ret
 
@@ -172,7 +178,7 @@ class NamedType(Node):
     package : Optional[Name]
 
     def clone(self) -> 'NamedType':
-        ret = NamedType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(NamedType, super().clone())
         ret.name = self.name.clone()
         ret.package = self.package and self.package.clone()
         return ret
@@ -181,7 +187,7 @@ class StructType(Node):
     fields: List['StructField']
 
     def clone(self) -> 'StructType':
-        ret = StructType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(StructType, super().clone())
         ret.fields = [v.clone() for v in self.fields]
         return ret
 
@@ -191,7 +197,7 @@ class StructField(Node):
     tags: Optional[String]
 
     def clone(self) -> 'StructField':
-        ret = StructField(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(StructField, super().clone())
         ret.type = self.type.clone()
         ret.name = self.name and self.name.clone()
         ret.tags = self.tags and self.tags.clone()
@@ -202,7 +208,7 @@ class ChannelType(Node):
     elem : 'Type'
 
     def clone(self) -> 'ChannelType':
-        ret = ChannelType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(ChannelType, super().clone())
         ret.dir = self.dir
         ret.elem = self.elem.clone()
         return ret
@@ -211,7 +217,7 @@ class PointerType(Node):
     base: 'Type'
 
     def clone(self) -> 'PointerType':
-        ret = PointerType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(PointerType, super().clone())
         ret.base = self.base.clone()
         return ret
 
@@ -219,7 +225,7 @@ class FunctionType(Node):
     type: 'FunctionSignature'
 
     def clone(self) -> 'FunctionType':
-        ret = FunctionType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(FunctionType, super().clone())
         ret.type = self.type.clone()
         return ret
 
@@ -228,7 +234,7 @@ class FunctionArgument(Node):
     type: 'Type'
 
     def clone(self) -> 'FunctionArgument':
-        ret = FunctionArgument(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(FunctionArgument, super().clone())
         ret.name = self.name and self.name.clone()
         ret.type = self.type.clone()
         return ret
@@ -239,7 +245,7 @@ class FunctionSignature(Node):
     rets : List[FunctionArgument]
 
     def clone(self) -> 'FunctionSignature':
-        ret = FunctionSignature(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(FunctionSignature, super().clone())
         ret.var = self.var
         ret.args = [v.clone() for v in self.args]
         ret.rets = [v.clone() for v in self.rets]
@@ -252,7 +258,7 @@ class InterfaceType(Node):
     ]]
 
     def clone(self) -> 'InterfaceType':
-        ret = InterfaceType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(InterfaceType, super().clone())
         ret.decls = [v.clone() for v in self.decls]
         return ret
 
@@ -261,7 +267,7 @@ class InterfaceMethod(Node):
     type: FunctionSignature
 
     def clone(self) -> 'InterfaceMethod':
-        ret = InterfaceMethod(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(InterfaceMethod, super().clone())
         ret.name = self.name.clone()
         ret.type = self.type.clone()
         return ret
@@ -283,17 +289,29 @@ class Primary(Node):
     mods : List['Modifier']
 
     def clone(self) -> 'Primary':
-        ret = Primary(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Primary, super().clone())
         ret.val = self.val.clone()
         ret.mods = [v.clone() for v in self.mods]
         return ret
+
+    def is_index(self) -> bool:
+        if not self.mods:
+            return False
+        else:
+            return isinstance(self.mods[-1], Index)
+
+    def is_selector(self) -> bool:
+        if not self.mods:
+            return False
+        else:
+            return isinstance(self.mods[-1], Selector)
 
 class Conversion(Node):
     type  : Type
     value : 'Expression'
 
     def clone(self) -> 'Conversion':
-        ret = Conversion(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Conversion, super().clone())
         ret.type = self.type.clone()
         ret.value = self.value.clone()
         return ret
@@ -304,7 +322,7 @@ class Expression(Node):
     right : Optional['Expression']
 
     def clone(self) -> 'Expression':
-        ret = Expression(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Expression, super().clone())
         ret.op = self.op and self.op.clone()
         ret.left = self.left.clone()
         ret.right = self.right and self.right.clone()
@@ -327,7 +345,7 @@ class Lambda(Node):
     signature : FunctionSignature
 
     def clone(self) -> 'Lambda':
-        ret = Lambda(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Lambda, super().clone())
         ret.body = self.body.clone()
         ret.signature = self.signature.clone()
         return ret
@@ -336,7 +354,7 @@ class VarArrayType(Node):
     elem: Type
 
     def clone(self) -> 'VarArrayType':
-        ret = VarArrayType(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(VarArrayType, super().clone())
         ret.elem = self.elem.clone()
         return ret
 
@@ -353,7 +371,7 @@ class LiteralValue(Node):
     items: List['Element']
 
     def clone(self) -> 'LiteralValue':
-        ret = LiteralValue(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(LiteralValue, super().clone())
         ret.items = [v.clone() for v in self.items]
         return ret
 
@@ -362,7 +380,7 @@ class Element(Node):
     value : Union[Expression, LiteralValue]
 
     def clone(self) -> 'Element':
-        ret = Element(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Element, super().clone())
         ret.key = self.key and self.key.clone()
         ret.value = self.value.clone()
         return ret
@@ -372,7 +390,7 @@ class Composite(Node):
     value : LiteralValue
 
     def clone(self) -> 'Composite':
-        ret = Composite(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Composite, super().clone())
         ret.type = self.type.clone()
         ret.value = self.value.clone()
         return ret
@@ -399,7 +417,7 @@ class Index(Node):
     expr: Expression
 
     def clone(self) -> 'Index':
-        ret = Index(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Index, super().clone())
         ret.expr = self.expr.clone()
         return ret
 
@@ -409,7 +427,7 @@ class Slice(Node):
     cap: Optional[Union[bool, Expression]]
 
     def clone(self) -> 'Slice':
-        ret = Slice(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Slice, super().clone())
         ret.pos = self.pos and self.pos.clone()
         ret.len = self.len and self.len.clone()
         ret.cap = self.cap and self.cap.clone()
@@ -419,7 +437,7 @@ class Selector(Node):
     attr: Name
 
     def clone(self) -> 'Selector':
-        ret = Selector(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Selector, super().clone())
         ret.attr = self.attr.clone()
         return ret
 
@@ -428,7 +446,7 @@ class Arguments(Node):
     args : List[Union[Type, Expression]]
 
     def clone(self) -> 'Arguments':
-        ret = Arguments(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Arguments, super().clone())
         ret.var = self.var
         ret.args = [v.clone() for v in self.args]
         return ret
@@ -437,7 +455,7 @@ class Assertion(Node):
     type: Optional[Type]
 
     def clone(self) -> 'Assertion':
-        ret = Assertion(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Assertion, super().clone())
         ret.type = self.type and self.type.clone()
         return ret
 
@@ -466,7 +484,7 @@ class InitSpec(Node):
     consts : bool
 
     def clone(self) -> 'InitSpec':
-        ret = InitSpec(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(InitSpec, super().clone())
         ret.iota = self.iota
         ret.type = self.type and self.type.clone()
         ret.names = [v.clone() for v in self.names]
@@ -480,7 +498,7 @@ class TypeSpec(Node):
     alias : bool
 
     def clone(self) -> 'TypeSpec':
-        ret = TypeSpec(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(TypeSpec, super().clone())
         ret.name = self.name.clone()
         ret.type = self.type.clone()
         ret.alias = self.alias
@@ -494,7 +512,7 @@ class Function(Node):
     body: Optional['CompoundStatement']
 
     def clone(self) -> 'Function':
-        ret = Function(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Function, super().clone())
         ret.opts = self.opts
         ret.name = self.name.clone()
         ret.type = self.type.clone()
@@ -526,7 +544,7 @@ class ImportSpec(Node):
     alias : Optional[Union[Name, ImportC, ImportHere]]
 
     def clone(self) -> 'ImportSpec':
-        ret = ImportSpec(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(ImportSpec, super().clone())
         ret.path = self.path.clone()
         ret.alias = self.alias and self.alias.clone()
         return ret
@@ -541,7 +559,7 @@ class Package(Node):
     imports : List[ImportSpec]
 
     def clone(self) -> 'ImportSpec':
-        ret = ImportSpec(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(ImportSpec, super().clone())
         ret.name = self.name.clone()
         ret.vars = [v.clone() for v in self.vars]
         ret.links = [v.clone() for v in self.links]
@@ -557,7 +575,7 @@ class Go(Node):
     expr: Expression
 
     def clone(self) -> 'Go':
-        ret = Go(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Go, super().clone())
         ret.expr = self.expr.clone()
         return ret
 
@@ -568,7 +586,7 @@ class If(Node):
     branch : Optional[Union['If', 'CompoundStatement']]
 
     def clone(self) -> 'If':
-        ret = If(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(If, super().clone())
         ret.cond = self.cond.clone()
         ret.init = self.init.clone()
         ret.body = self.body.clone()
@@ -582,7 +600,7 @@ class For(Node):
     body: 'CompoundStatement'
 
     def clone(self) -> 'For':
-        ret = For(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(For, super().clone())
         ret.body = self.body.clone()
         ret.cond = self.cond and self.cond.clone()
         ret.init = self.init and self.init.clone()
@@ -596,7 +614,7 @@ class ForRange(Node):
     terms : List[Union[Name, Expression]]
 
     def clone(self) -> 'ForRange':
-        ret = ForRange(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(ForRange, super().clone())
         ret.svd = self.svd
         ret.expr = self.expr.clone()
         ret.body = self.body.clone()
@@ -607,7 +625,7 @@ class Defer(Node):
     expr: Expression
 
     def clone(self) -> 'Defer':
-        ret = Defer(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Defer, super().clone())
         ret.expr = self.expr.clone()
         return ret
 
@@ -615,7 +633,7 @@ class Select(Node):
     cases: List['SelectCase']
 
     def clone(self) -> 'Select':
-        ret = Select(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Select, super().clone())
         ret.cases = [v.clone() for v in self.cases]
         return ret
 
@@ -624,7 +642,7 @@ class SelectCase(Node):
     expr: Optional[Union['Send', 'SelectReceive']]
 
     def clone(self) -> 'SelectCase':
-        ret = SelectCase(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(SelectCase, super().clone())
         ret.body = [v.clone() for v in self.body]
         ret.expr = self.expr and self.expr.clone()
         return ret
@@ -635,7 +653,7 @@ class SelectReceive(Node):
     terms : List[Union[Name, Expression]]
 
     def clone(self) -> 'SelectReceive':
-        ret = SelectReceive(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(SelectReceive, super().clone())
         ret.svd = self.svd
         ret.value = self.value.clone()
         ret.terms = [v.clone() for v in self.terms]
@@ -647,7 +665,7 @@ class Switch(Node):
     cases : List['SwitchCase']
 
     def clone(self) -> 'Switch':
-        ret = Switch(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Switch, super().clone())
         ret.expr = self.expr and self.expr.clone()
         ret.init = self.init and self.init.clone()
         ret.cases = [v.clone() for v in self.cases]
@@ -658,7 +676,7 @@ class SwitchCase(Node):
     body: List['Statement']
 
     def clone(self) -> 'Switch':
-        ret = Switch(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Switch, super().clone())
         ret.vals = [v.clone() for v in self.vals]
         ret.body = [v.clone() for v in self.body]
         return ret
@@ -670,7 +688,7 @@ class TypeSwitch(Node):
     cases : List['TypeSwitchCase']
 
     def clone(self) -> 'TypeSwitch':
-        ret = TypeSwitch(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(TypeSwitch, super().clone())
         ret.name = self.name and self.name.clone()
         ret.type = self.type and self.type.clone()
         ret.init = self.init and self.init.clone()
@@ -682,7 +700,7 @@ class TypeSwitchCase(Node):
     types : List[Type]
 
     def clone(self) -> 'TypeSwitchCase':
-        ret = TypeSwitchCase(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(TypeSwitchCase, super().clone())
         ret.body = [v.clone() for v in self.body]
         ret.types = [v.clone() for v in self.types]
         return ret
@@ -693,7 +711,7 @@ class Goto(Node):
     label: Name
 
     def clone(self) -> 'Goto':
-        ret = Goto(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Goto, super().clone())
         ret.label = self.label.clone()
         return ret
 
@@ -702,7 +720,7 @@ class Label(Node):
     body: 'Statement'
 
     def clone(self) -> 'Label':
-        ret = Label(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Label, super().clone())
         ret.name = self.name.clone()
         ret.body = self.body.clone()
         return ret
@@ -711,7 +729,7 @@ class Return(Node):
     vals: List[Expression]
 
     def clone(self) -> 'Return':
-        ret = Return(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Return, super().clone())
         ret.vals = [v.clone() for v in self.vals]
         return ret
 
@@ -719,7 +737,7 @@ class Break(Node):
     label: Optional[Name]
 
     def clone(self) -> 'Break':
-        ret = Break(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Break, super().clone())
         ret.label = self.label and self.label.clone()
         return ret
 
@@ -727,7 +745,7 @@ class Continue(Node):
     label: Optional[Name]
 
     def clone(self) -> 'Continue':
-        ret = Continue(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Continue, super().clone())
         ret.label = self.label and self.label.clone()
         return ret
 
@@ -742,7 +760,7 @@ class Send(Node):
     expr: Expression
 
     def clone(self) -> 'Send':
-        ret = Send(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Send, super().clone())
         ret.chan = self.chan.clone()
         ret.expr = self.expr.clone()
         return ret
@@ -756,7 +774,7 @@ class IncDec(Node):
     expr: Expression
 
     def clone(self) -> 'IncDec':
-        ret = IncDec(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(IncDec, super().clone())
         ret.incr = self.incr
         ret.expr = self.expr.clone()
         return ret
@@ -767,7 +785,7 @@ class Assignment(Node):
     rval: List[Expression]
 
     def clone(self) -> 'Assignment':
-        ret = Assignment(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(Assignment, super().clone())
         ret.type = self.type.clone()
         ret.lval = [v.clone() for v in self.lval]
         ret.rval = [v.clone() for v in self.rval]
@@ -788,7 +806,7 @@ class CompoundStatement(Node):
     body: List['Statement']
 
     def clone(self) -> 'CompoundStatement':
-        ret = CompoundStatement(Token(self.col, self.row, self.file, TokenType.End, None))
+        ret = cast(CompoundStatement, super().clone())
         ret.body = [v.clone() for v in self.body]
         return ret
 

@@ -867,7 +867,7 @@ class Inferrer:
         return ret
 
     def _rune_checked(self, dest: Type, source: Type) -> bool:
-        return dest.kind == Kind.String and (source is Types.UntypedInt or source.kind == Kind.Int32)
+        return dest.kind == Kind.String and (source is Types.UntypedInt or source.kind in CHAR_KINDS)
 
     def _range_checked(self, vtype: Type, node: Node, value: TokenValue) -> Constant:
         vk = vtype.kind
@@ -998,6 +998,58 @@ class Inferrer:
         else:
             return self.__binary_ops__[op.value](self, lhs, rhs)
 
+    ### Type Folders ###
+
+    def _fold_unary_addr(self, node: Node, vt: Type) -> Type:
+        if self._is_addressable(node):
+            return PtrType(vt)
+        else:
+            raise self._error(node, 'value is not addressable')
+
+    def _fold_unary_plus(self, node: Node, vt: Type) -> Type:
+        raise NotImplementedError   # TODO: fold unary +
+
+    def _fold_unary_recv(self, node: Node, vt: Type) -> Type:
+        raise NotImplementedError   # TODO: fold unary <-
+
+    def _fold_unary_minus(self, node: Node, vt: Type) -> Type:
+        raise NotImplementedError   # TODO: fold unary -
+
+    def _fold_unary_deref(self, node: Node, vt: Type) -> Type:
+        vt = self._type_deref(vt)
+        vk = vt.kind
+
+        # must be pointers
+        if vk != Kind.Ptr:
+            raise self._error(node, 'value is not a pointer')
+        else:
+            return cast(PtrType, vt).elem
+
+    def _fold_unary_bit_not(self, node: Node, vt: Type) -> Type:
+        raise NotImplementedError   # TODO: fold unary ^
+
+    def _fold_unary_bool_not(self, node: Node, vt: Type) -> Type:
+        raise NotImplementedError   # TODO: fold unary !
+
+    __unary_folders__ = {
+        '+'  : _fold_unary_plus,
+        '-'  : _fold_unary_minus,
+        '!'  : _fold_unary_bool_not,
+        '^'  : _fold_unary_bit_not,
+        '*'  : _fold_unary_deref,
+        '&'  : _fold_unary_addr,
+        '<-' : _fold_unary_recv,
+    }
+
+    def _fold_unary(self, node: Node, vt: Type, op: Operator) -> Type:
+        if op.value not in self.__unary_folders__:
+            raise SystemError('invalid unary folder')
+        else:
+            return self.__unary_folders__[op.value](self, node, vt)
+
+    def _fold_binary(self, node: Node, t1: Type, t2: Type, op: Operator) -> Type:
+        raise NotImplementedError   # TODO fold binary
+
     ### Expression Reducers ###
 
     Component = Union[
@@ -1055,6 +1107,14 @@ class Inferrer:
         prim.mods.append(prop)
         return self._wrap_prim(prim)
 
+    def _strip_comp(self, val: Component) -> Operand:
+        if not isinstance(val, Primary):
+            return val
+        elif not val.mods:
+            return val.val
+        else:
+            return self._wrap_prim(val)
+
     def _reduce_name(self, ctx: Context, name: Name) -> Operand:
         key = name.value
         sym = ctx.scope.resolve(key)
@@ -1102,24 +1162,31 @@ class Inferrer:
         lhs = expr.left
         lhs = reducer(ctx, lhs)
 
+        # no operator is present, must be a single value
+        if expr.op is None:
+            if expr.right is not None:
+                raise SystemError('invalid expr ast')
+            else:
+                return self._strip_comp(lhs)
+
         # update lhs expression
         if isinstance(lhs, (Primary, Expression)):
             expr.left = lhs
         else:
             expr.left = self._wrap_value(lhs)
 
-        # no operator is present, must be a single value
-        if expr.op is None:
-            if expr.right is not None:
-                raise SystemError('invalid expr ast')
-            else:
-                return lhs
-
         # apply corresponding operators if the operand is constant
         if expr.right is None:
-            lhs = self._to_const(lhs)
-            # FIXME: fix type info of non-const expression
-            return expr if not lhs else self._apply_unary(lhs, expr.op)
+            op = expr.op
+            ret = self._to_const(lhs)
+
+            # constant expression, apply operator directly
+            if ret is not None:
+                return self._apply_unary(ret, op)
+
+            # otherwise, fold the operator into type
+            expr.vt = self._fold_unary(lhs, lhs.vt, op)
+            return expr
 
         # reduce rhs expression
         rhs = expr.right
@@ -1132,15 +1199,16 @@ class Inferrer:
             expr.right = self._wrap_value(rhs)
 
         # try converting to consts
-        lhs = self._to_const(lhs)
-        rhs = self._to_const(rhs)
+        retl = self._to_const(lhs)
+        retr = self._to_const(rhs)
 
         # reduce if both operands are constant
-        # FIXME: fix type info of non-const expression
-        if not lhs or not rhs:
-            return expr
-        else:
-            return self._apply_binary(lhs, rhs, expr.op)
+        if retl and retr:
+            return self._apply_binary(retl, retr, expr.op)
+
+        # otherwise, fold the operator on two operands
+        expr.vt = self._fold_binary(expr.op, lhs.vt, rhs.vt, expr.op)
+        return expr
 
     def _reduce_basic(self, ctx: Context, val: Operand) -> Operand:
         if isinstance(val, Name):
@@ -1159,7 +1227,7 @@ class Inferrer:
             raise SystemError('incorrect singular reducer state')
 
     def _reduce_lambda(self, ctx: Context, func: Lambda) -> Operand:
-        pass    # TODO: reduce lambda
+        raise NotImplementedError   # TODO: reduce lambda
 
     def _reduce_primary(self, ctx: Context, primary: Primary) -> Component:
         val = primary.val
@@ -1229,38 +1297,146 @@ class Inferrer:
                 if result is not None:
                     return result
 
-        # modifier reducer
-        def reducer(t: Type, m: Modifier) -> Type:
-            if isinstance(m, Index):
-                return self._reduce_primary_mod_index(t, m)
-            elif isinstance(m, Slice):
-                return self._reduce_primary_mod_slice(t, m)
-            elif isinstance(m, Selector):
-                return self._reduce_primary_mod_selector(t, m)
-            elif isinstance(m, Arguments):
-                return self._reduce_primary_mod_arguments(t, m)
-            elif isinstance(m, Assertion):
-                return self._reduce_primary_mod_assertion(ctx, t, m)
-            else:
-                raise SystemError('invalid modifier reducer state')
+        # initial value and type
+        vtype = val.vt
+        value = self._to_const(val)
+
+        # get the actual value, if any
+        if value is not None:
+            value = value.value
 
         # fold over the modifiers to calculate the primary type
-        primary.vt = functools.reduce(reducer, mods, val.vt)
+        while mods:
+            mod0, mods = mods[0], mods[1:]
+            vtype, value = self._reduce_primary_mod(mod0)(ctx, vtype, value, mod0)
+
+        # still constant, convert to an operand
+        if value is not None:
+            return self._make_typed(primary, value, vtype)
+
+        # set the final type
+        primary.vt = vtype
         return primary
 
-    def _reduce_primary_mod_index(self, vt: Type, mod: Index) -> Type:
-        pass    # TODO: reduce_index()
+    ValueTerm = Optional[TokenValue]
+    ResultTerm = Tuple[Type, ValueTerm]
 
-    def _reduce_primary_mod_slice(self, vt: Type, mod: Slice) -> Type:
-        pass    # TODO: reduce_slice()
+    def _reduce_primary_mod(self, mod: Modifier) -> Callable[[Context, Type, ValueTerm, Modifier], ResultTerm]:
+        if isinstance(mod, Index):
+            return self._reduce_primary_mod_index
+        elif isinstance(mod, Slice):
+            return self._reduce_primary_mod_slice
+        elif isinstance(mod, Selector):
+            return self._reduce_primary_mod_selector
+        elif isinstance(mod, Arguments):
+            return self._reduce_primary_mod_arguments
+        elif isinstance(mod, Assertion):
+            return self._reduce_primary_mod_assertion
+        else:
+            raise SystemError('invalid modifier reducer state')
 
-    def _reduce_primary_mod_selector(self, vt: Type, mod: Selector) -> Type:
-        pass    # TODO: reduce_selector()
+    def _reduce_primary_mod_index(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Index) -> ResultTerm:
+        """
+        Index expressions,
+        refs from https://golang.org/ref/spec#Index_expressions
 
-    def _reduce_primary_mod_arguments(self, vt: Type, mod: Arguments) -> Type:
-        pass    # TODO: reduce_arguments()
+        A primary expression of the form a[x] denotes the element of the array,
+        pointer to array, slice, string or map a indexed by x. The value x is
+        called the index or map key, respectively. The following rules apply:
+        """
 
-    def _reduce_primary_mod_assertion(self, ctx: Context, vt: Type, mod: Assertion) -> Type:
+        # reduce the index expression
+        rt = self._type_deref(vt)
+        iv = self._reduce_expr(ctx, mod.expr)
+        cv = self._to_const(iv)
+
+        # for a of pointer to array type, a[x] is shorthand for (*a)[x]
+        if rt.kind == Kind.Ptr:
+            rt = cast(PtrType, rt)
+            rt = self._type_deref(rt.elem)
+
+            # must be an array
+            if rt.kind != Kind.Array:
+                raise self._error(mod.expr, 'invalid indexing of a non-array value')
+
+        # for a of array type A
+        if rt.kind == Kind.Array:
+            at = cast(ArrayType, rt)
+            vk = iv.vt.kind
+
+            # the index x must be of integer type or an untyped constant
+            # a constant index must be in range
+            if vk not in INT_KINDS:
+                raise self._error(mod.expr, 'array index must be of integer type')
+            elif cv and not (0 <= cv.value < at.len):
+                raise self._error(mod.expr, 'array index out of range')
+            else:
+                return at.elem, None
+
+        # for a of slice type S
+        if rt.kind == Kind.Slice:
+            st = cast(SliceType, rt)
+            vk = iv.vt.kind
+
+            # the index x must be of integer type or an untyped constant,
+            # a constant index must be non-negative and representable by a value of type int
+            if vk not in INT_KINDS:
+                raise self._error(mod.expr, 'slice index must be of integer type')
+            elif cv and not (0 <= cv.value < (1 << 63)):
+                raise self._error(mod.expr, 'slice index out of range')
+            else:
+                return st.elem, None
+
+        # for a of string type
+        if rt.kind == Kind.String:
+            vk = iv.vt.kind
+            nb = vv and len(vv)
+
+            # the index x must be of integer type or an untyped constant,
+            # a constant index must be non-negative and representable by a value of type int
+            if vk not in INT_KINDS:
+                raise self._error(mod.expr, 'string index must be of integer type')
+            elif not cv or nb is None:
+                return Types.Uint8, None
+            elif 0 <= cv.value < nb:
+                return Types.Uint8, vv[cv.value]
+            else:
+                raise self._error(mod.expr, 'string index out of range')
+
+        # must be of map type M, otherwise a[x] is illegal
+        if rt.kind != Kind.Map:
+            raise self._error(mod, 'invalid indexing of type %s' % vt)
+
+        # for a of map type M
+        mt = cast(MapType, rt)
+        mk = mt.key
+
+        # x's type must be assignable to the key type of M
+        if not self._is_assignable(mk, vt):
+            raise self._error(mod, 'type must be assignable to the map key')
+        else:
+            return mt.elem, None
+
+    def _reduce_primary_mod_slice(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Slice) -> ResultTerm:
+        raise NotImplementedError   # TODO: reduce_slice()
+
+    def _reduce_primary_mod_selector(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Selector) -> ResultTerm:
+        raise NotImplementedError   # TODO: reduce_selector()
+
+    def _reduce_primary_mod_arguments(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Arguments) -> ResultTerm:
+        raise NotImplementedError   # TODO: reduce_arguments()
+
+    def _reduce_primary_mod_assertion(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Assertion) -> ResultTerm:
+        """
+        Type assertions,
+        refs from https://golang.org/ref/spec#Type_assertions
+
+        For an expression x of interface type and a type T, the primary
+        expression x.(T) asserts that x is not nil and that the value stored in
+        x is of type T. The notation x.(T) is called a type assertion.
+        """
+
+        # infer the asserted type
         tt = self._type_deref(vt)
         at = self._infer_type(ctx, mod.type)
 
@@ -1275,8 +1451,10 @@ class Inferrer:
         # the asserted type must implement the interface
         if not self._is_implements(self._type_deref(at), cast(InterfaceType, tt)):
             raise self._error(mod, 'type %s does not implement interface %s' % (at, vt))
-        else:
-            return at
+
+        # set the modifier type
+        mod.vt = at
+        return at, vv
 
     def _reduce_primary_cast(self, mod: Arguments, symbol: Symbol) -> Optional[Operand]:
         args = mod.args
@@ -1635,7 +1813,28 @@ class Inferrer:
         else:
             return symbol.type
 
-    ### Type Traits ###
+    ### Type & Value Traits ###
+
+    def _rm_mod(self, p: Primary) -> Primary:
+        ret = p.clone()
+        ret.mods = ret.mods[:-1]
+        return ret
+
+    def _is_idx_sl(self, p: Primary) -> bool:
+        return (len(p.mods) == 1 and p.val.vt.kind == Kind.Slice) or \
+               (len(p.mods) >= 2 and p.mods[-2].vt.kind == Kind.Slice)
+
+    def _is_addr_ar(self, p: Primary) -> bool:
+        if not p.mods:
+            return p.val.vt.kind == Kind.Array and self._is_addressable(p)
+        else:
+            return p.mods[-1].vt.kind == Kind.Array and self._is_addressable(p)
+
+    def _is_addr_st(self, p: Primary) -> bool:
+        if not p.mods:
+            return p.val.vt.kind == Kind.Struct and self._is_addressable(p)
+        else:
+            return p.mods[-1].vt.kind == Kind.Struct and self._is_addressable(p)
 
     def _is_char_sl(self, t: Type) -> bool:
         return t.kind == Kind.Slice and \
@@ -1824,6 +2023,48 @@ class Inferrer:
         # `vt` implements `intf` iff `tfs` is a superset of `ifs`
         return i == len(ifs)
 
+    def _is_addressable(self, x: Node) -> bool:
+        """
+        For an operand x of type T, the address operation &x generates a
+        pointer of type *T to x. The node is addressable when it is:
+        """
+
+        # a variable
+        if isinstance(x, Name):
+            return True
+
+        # not an expression
+        elif isinstance(x, Expression) and x.right is not None:
+            return False
+
+        # an addressable primary wrapper
+        elif isinstance(x, Expression) and x.op is None:
+            return self._is_addressable(x.left)
+
+        # a pointer indirection
+        elif isinstance(x, Expression) and x.op.value == '*':
+            return True
+
+        # a composite literal
+        elif isinstance(x, Primary) and not x.mods and isinstance(x.val, Composite):
+            return True
+
+        # a slice indexing operation
+        elif isinstance(x, Primary) and x.is_index() and self._is_idx_sl(x):
+            return True
+
+        # an array indexing operation of an addressable array
+        elif isinstance(x, Primary) and x.is_index() and self._is_addr_ar(self._rm_mod(x.clone())):
+            return True
+
+        # a field selector of an addressable struct operand
+        elif isinstance(x, Primary) and x.is_selector() and self._is_addr_st(self._rm_mod(x.clone())):
+            return True
+
+        # otherwise it's not addressable
+        else:
+            return False
+
     def _is_convertible(self, t: Type, x: Type) -> bool:
         """
         Type convertibility check,
@@ -1908,7 +2149,7 @@ class Inferrer:
         vtype.elem = self._infer_type(ctx, elem)
 
     def _infer_struct_type(self, ctx: Context, vtype: StructType, node: StructTypeNode):
-        pass    # TODO: struct type
+        raise NotImplementedError   # TODO: struct type
 
     def _infer_channel_type(self, ctx: Context, vtype: ChanType, node: ChannelTypeNode):
         vtype.dir = node.dir
@@ -2009,7 +2250,7 @@ class Inferrer:
     ### Specification Inferrers ###
 
     def _infer_var_spec(self, ctx: Context, spec: InitSpec) -> List[Symbol]:
-        pass    # TODO: infer var
+        raise NotImplementedError   # TODO: infer var
 
     def _infer_type_spec(self, ctx: Context, spec: TypeSpec) -> Symbol:
         name = spec.name
@@ -2036,7 +2277,7 @@ class Inferrer:
         return symbol
 
     def _infer_func_spec(self, ctx: Context, spec: Function) -> Symbol:
-        pass    # TODO: infer func
+        raise NotImplementedError   # TODO: infer func
 
     def _infer_const_spec(self, ctx: Context, spec: InitSpec) -> List[Symbol]:
         with self.Iota(self, spec.iota):
