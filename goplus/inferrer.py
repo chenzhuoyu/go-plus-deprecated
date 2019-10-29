@@ -17,6 +17,7 @@ from typing import Callable
 from typing import Iterable
 from typing import Optional
 
+from .ast import Nil
 from .ast import Int
 from .ast import Bool
 from .ast import Name
@@ -32,6 +33,7 @@ from .ast import Lambda
 from .ast import Constant
 from .ast import Composite
 from .ast import Conversion
+from .ast import LiteralValue
 
 from .ast import Index
 from .ast import Slice
@@ -220,6 +222,11 @@ INT_KINDS = {
     Kind.Uintptr : TokenType.Int,
 }
 
+CHAR_KINDS = {
+    Kind.Int32,
+    Kind.Uint8,
+}
+
 FLOAT_KINDS = {
     Kind.Float32: TokenType.Float,
     Kind.Float64: TokenType.Float,
@@ -385,6 +392,7 @@ CONVERTING_MAPS = {
 }
 
 CONSTRUCTING_MAPS = {
+    Kind.Nil        : Nil,
     Kind.Bool       : Bool,
     Kind.Int        : Int,
     Kind.Int8       : Int,
@@ -837,9 +845,9 @@ class Inferrer:
     ### Operator Appliers ###
 
     def _cast_to(self, vtype: Type, value: Constant) -> Constant:
-        if self._rune_checked(value.vt, vtype):
+        if self._rune_checked(vtype, value.vt):
             return self._make_rune(vtype, value)
-        elif self._type_coerce(value.vt, vtype) is not None:
+        elif self._is_convertible(vtype, value.vt):
             return self._range_checked(vtype, value, value.value)
         else:
             raise self._error(value, 'invalid type conversion from %s to %s' % (value.vt, vtype))
@@ -858,8 +866,8 @@ class Inferrer:
         ret.vt = vtype
         return ret
 
-    def _rune_checked(self, rune: Type, string: Type) -> bool:
-        return string.kind == Kind.String and (rune is Types.UntypedInt or rune.kind == Kind.Int32)
+    def _rune_checked(self, dest: Type, source: Type) -> bool:
+        return dest.kind == Kind.String and (source is Types.UntypedInt or source.kind == Kind.Int32)
 
     def _range_checked(self, vtype: Type, node: Node, value: TokenValue) -> Constant:
         vk = vtype.kind
@@ -914,7 +922,7 @@ class Inferrer:
             return self._range_checked(tr, lhs, val)
 
     def _bincmp_applier(self, lhs: Constant, rhs: Constant, op: BinaryOps) -> Constant:
-        if self._type_coerce(lhs.vt, rhs.vt) is None:
+        if not self._is_comparable(lhs.vt, rhs.vt):
             raise self._error(lhs, 'undefined binary comparison between %s and %s' % (lhs.vt, rhs.vt))
         else:
             return self._make_bool(lhs, op(lhs.value, rhs.value))
@@ -1002,6 +1010,8 @@ class Inferrer:
             return val
         elif isinstance(val, Primary):
             return self._to_const(val.val)
+        elif not isinstance(val, Expression):
+            return None
         elif val.op or val.right:
             return None
         elif not isinstance(val.left, Primary):
@@ -1020,13 +1030,18 @@ class Inferrer:
 
     def _wrap_prim(self, val: Primary) -> Expression:
         ret = Expression(Token(val.col, val.row, val.file, TokenType.End, None))
+        ret.vt = val.vt
         ret.left = val
         return ret
 
     def _wrap_value(self, val: Operand) -> Expression:
-        prim = Primary(Token(val.col, val.row, val.file, TokenType.End, None))
-        prim.val = val
-        return self._wrap_prim(prim)
+        if isinstance(val, Expression):
+            return val
+        else:
+            prim = Primary(Token(val.col, val.row, val.file, TokenType.End, None))
+            prim.vt = val.vt
+            prim.val = val
+            return self._wrap_prim(prim)
 
     def _wrap_selector(self, base: Name, attr: Name) -> Expression:
         prim = Primary(Token(base.col, base.row, base.file, TokenType.End, None))
@@ -1103,17 +1118,16 @@ class Inferrer:
         # apply corresponding operators if the operand is constant
         if expr.right is None:
             lhs = self._to_const(lhs)
+            # FIXME: fix type info of non-const expression
             return expr if not lhs else self._apply_unary(lhs, expr.op)
 
         # reduce rhs expression
         rhs = expr.right
-        rhs = expr.right = self._reduce_expr(ctx, rhs)
+        rhs = self._reduce_expr(ctx, rhs)
 
         # update rhs expression
         if isinstance(rhs, Primary):
             expr.right = self._wrap_prim(rhs)
-        elif isinstance(rhs, Expression):
-            expr.right = rhs
         else:
             expr.right = self._wrap_value(rhs)
 
@@ -1122,6 +1136,7 @@ class Inferrer:
         rhs = self._to_const(rhs)
 
         # reduce if both operands are constant
+        # FIXME: fix type info of non-const expression
         if not lhs or not rhs:
             return expr
         else:
@@ -1131,11 +1146,11 @@ class Inferrer:
         if isinstance(val, Name):
             return self._reduce_name(ctx, val)
         elif isinstance(val, Lambda):
-            raise NotImplementedError("_reduce_singular().Lambda")      # TODO: implement this
+            return self._reduce_lambda(ctx, val)
         elif isinstance(val, Constant.__args__):
-            return self._reduce_const(ctx, val)
+            return self._reduce_constant(val)
         elif isinstance(val, Composite):
-            raise NotImplementedError("_reduce_singular().Composite")   # TODO: implement this
+            return self._reduce_composite(ctx, val)
         elif isinstance(val, Conversion):
             return self._reduce_conversion(ctx, val)
         elif isinstance(val, Expression):
@@ -1143,9 +1158,8 @@ class Inferrer:
         else:
             raise SystemError('incorrect singular reducer state')
 
-    def _reduce_const(self, _ctx: Context, const: Constant) -> Operand:
-        const.vt = self._type_of(const)
-        return const
+    def _reduce_lambda(self, ctx: Context, func: Lambda) -> Operand:
+        pass    # TODO: reduce lambda
 
     def _reduce_primary(self, ctx: Context, primary: Primary) -> Component:
         val = primary.val
@@ -1190,6 +1204,12 @@ class Inferrer:
                 symbol = scope.resolve(name)
                 result = self._reduce_primary_cast(mod0, symbol)
 
+                # check for compile-time functions
+                if result is None:
+                    if isinstance(symbol, Symbols.Func):
+                        if symbol in self.__function_map__:
+                            result = self.__function_map__[symbol](self, mod0)
+
                 # check for reduction result
                 if result is not None:
                     return result
@@ -1209,12 +1229,54 @@ class Inferrer:
                 if result is not None:
                     return result
 
-        # simple function call
-        if modc == 1 and isinstance(val, Arguments):
-            print('simple function call')   # TODO: simple function call
+        # modifier reducer
+        def reducer(t: Type, m: Modifier) -> Type:
+            if isinstance(m, Index):
+                return self._reduce_primary_mod_index(t, m)
+            elif isinstance(m, Slice):
+                return self._reduce_primary_mod_slice(t, m)
+            elif isinstance(m, Selector):
+                return self._reduce_primary_mod_selector(t, m)
+            elif isinstance(m, Arguments):
+                return self._reduce_primary_mod_arguments(t, m)
+            elif isinstance(m, Assertion):
+                return self._reduce_primary_mod_assertion(ctx, t, m)
+            else:
+                raise SystemError('invalid modifier reducer state')
 
-        # otherwise it's not reducable for now
+        # fold over the modifiers to calculate the primary type
+        primary.vt = functools.reduce(reducer, mods, val.vt)
         return primary
+
+    def _reduce_primary_mod_index(self, vt: Type, mod: Index) -> Type:
+        pass    # TODO: reduce_index()
+
+    def _reduce_primary_mod_slice(self, vt: Type, mod: Slice) -> Type:
+        pass    # TODO: reduce_slice()
+
+    def _reduce_primary_mod_selector(self, vt: Type, mod: Selector) -> Type:
+        pass    # TODO: reduce_selector()
+
+    def _reduce_primary_mod_arguments(self, vt: Type, mod: Arguments) -> Type:
+        pass    # TODO: reduce_arguments()
+
+    def _reduce_primary_mod_assertion(self, ctx: Context, vt: Type, mod: Assertion) -> Type:
+        tt = self._type_deref(vt)
+        at = self._infer_type(ctx, mod.type)
+
+        # untyped nil is not allowed
+        if tt.kind == Kind.Nil:
+            raise self._error(mod, 'use of untyped nil')
+
+        # must be an interface
+        if tt.kind != Kind.Interface:
+            raise self._error(mod, 'type %s is not an interface' % vt)
+
+        # the asserted type must implement the interface
+        if not self._is_implements(self._type_deref(at), cast(InterfaceType, tt)):
+            raise self._error(mod, 'type %s does not implement interface %s' % (at, vt))
+        else:
+            return at
 
     def _reduce_primary_cast(self, mod: Arguments, symbol: Symbol) -> Optional[Operand]:
         args = mod.args
@@ -1229,14 +1291,175 @@ class Inferrer:
             raise self._error(args[0], 'invalid type conversion')
 
         # try converting to constant
-        expr = args[0]
-        expr = self._to_const(expr)
+        arg0 = args[0]
+        expr = self._to_const(arg0)
 
         # try reducing as constant conversion only if all conditions are met
-        if expr is None:
-            return None
-        else:
+        if expr is not None:
             return self._cast_to(symbol.type, expr)
+
+        # must be convertible
+        if not self._is_convertible(symbol.type, arg0.vt):
+            raise self._error(mod, 'type %s is not convertible to %s' % (arg0.vt, symbol.type))
+
+        # set the expression type
+        arg0.vt = symbol.type
+        return arg0
+
+    def _reduce_function_cap(self, args: Arguments) -> Optional[Constant]:
+        return self._reduce_function_slen(args, 'cap', no_str = True)
+
+    def _reduce_function_len(self, args: Arguments) -> Optional[Constant]:
+        return self._reduce_function_slen(args, 'len', no_str = False)
+
+    def _reduce_function_imag(self, args: Arguments) -> Optional[Constant]:
+        return self._reduce_function_csplit(args, 'imag', lambda x: x.imag)
+
+    def _reduce_function_real(self, args: Arguments) -> Optional[Constant]:
+        return self._reduce_function_csplit(args, 'real', lambda x: x.real)
+
+    def _reduce_function_slen(self, args: Arguments, name: str, no_str: bool) -> Optional[Constant]:
+        argv = args.args
+        argc = len(argv)
+
+        # cannot be a variadic call
+        if args.var:
+            raise self._error(args, 'cannot be a variadic call')
+
+        # function takes exact 1 argument
+        if argc != 1:
+            raise self._error(args, 'function "%s" takes exact 1 argument' % name)
+
+        # which must be an expression
+        if not isinstance(argv[0], Expression):
+            raise self._error(argv[0], 'function "%s" requires an expression' % name)
+
+        # argument and it's type
+        arg0 = argv[0]
+        vtype = self._type_deref(arg0.vt)
+
+        # arrays: the number of elements in v (same as len(v))
+        if vtype.kind == Kind.Array:
+            return self._make_typed(arg0, cast(ArrayType, vtype).len, Types.Int)
+
+        # pointer to array: the number of elements in *v (same as len(v))
+        if vtype.kind == Kind.Ptr:
+            elem = cast(PtrType, vtype).elem
+            elem = self._type_deref(elem)
+
+            # check for array pointers
+            if elem.kind != Kind.Array:
+                return None
+            else:
+                return self._make_typed(arg0, cast(ArrayType, elem).len, Types.Int)
+
+        # check for string types
+        if no_str or vtype.kind != Kind.String:
+            return None
+
+        # then it must be a constant string
+        val = self._to_const(arg0)
+        return val and self._make_typed(arg0, len(val.value), Types.Int)
+
+    def _reduce_function_csplit(self, args: Arguments, name: str, extract: Callable[[complex], float]) -> Optional[Constant]:
+        argv = args.args
+        argc = len(argv)
+
+        # cannot be a variadic call
+        if args.var:
+            raise self._error(args, 'cannot be a variadic call')
+
+        # function takes exact 1 argument
+        if argc != 1:
+            raise self._error(args, 'function "%s" takes exact 1 argument' % name)
+
+        # which must be an expression
+        if not isinstance(argv[0], Expression):
+            raise self._error(argv[0], 'function "%s" requires an expression' % name)
+
+        # try converting to constant
+        val = argv[0]
+        val = self._to_const(val)
+
+        # must be a constant complex expression
+        if val is None:
+            return None
+
+        # extract the required part
+        vv = val.value
+        vv = extract(vv)
+
+        # build the result
+        if val.kind != TokenType.Complex:
+            raise self._error(val, 'function "%s" requires a complex argument' % name)
+        elif val.vt is Types.UntypedComplex:
+            return self._make_typed(args, vv, Types.UntypedFloat)
+        elif val.vt.kind == Kind.Complex64:
+            return self._make_typed(args, vv, Types.Float32)
+        elif val.vt.kind == Kind.Complex128:
+            return self._make_typed(args, vv, Types.Float64)
+        else:
+            raise self._error(args, 'function "%s" requires a complex number' % name)
+
+    def _reduce_function_complex(self, args: Arguments) -> Optional[Constant]:
+        argv = args.args
+        argc = len(argv)
+
+        # cannot be a variadic call
+        if args.var:
+            raise self._error(args, 'cannot be a variadic call')
+
+        # "complex" takes exact 2 arguments
+        if argc != 2:
+            raise self._error(args, 'function "complex" takes exact 2 arguments')
+
+        # which must all be expressions
+        if not isinstance(argv[0], Expression) or not isinstance(argv[1], Expression):
+            raise self._error(argv[0], 'function "complex" requires 2 expressions')
+
+        # real part and imaginary part
+        real = self._to_const(argv[0])
+        imag = self._to_const(argv[1])
+
+        # must be constant expressions
+        if real is None or imag is None:
+            return None
+
+        # real part must be ints or floats
+        if real.kind not in (TokenType.Int, TokenType.Float):
+            raise self._error(real, 'real part of a complex number must be ints or floats')
+
+        # imaginary part must be ints or floats
+        if imag.kind not in (TokenType.Int, TokenType.Float):
+            raise self._error(real, 'imaginary part of a complex number must be ints or floats')
+
+        # check token value type
+        if not isinstance(real.value, (int, float)) or not isinstance(imag.value, (int, float)):
+            raise SystemError('invalid token value')
+
+        # infer the result type, and construct the complex value
+        vt = self._type_coerce(real.vt, imag.vt)
+        val = complex(float(real.value), float(imag.value))
+
+        # check for value type
+        if vt is None:
+            raise self._error(args, 'mismatched types: %s and %s' % (real.vt, imag.vt))
+        elif isinstance(vt, UntypedType):
+            return self._make_typed(args, val, Types.UntypedComplex)
+        elif vt.kind == Kind.Float32:
+            return self._make_typed(args, val, Types.Complex64)
+        elif vt.kind == Kind.Float64:
+            return self._make_typed(args, val, Types.Complex128)
+        else:
+            raise self._error(args, 'function "complex" requires 2 floating-point numbers')
+
+    __function_map__ = {
+        Functions.Cap     : _reduce_function_cap,
+        Functions.Len     : _reduce_function_len,
+        Functions.Imag    : _reduce_function_imag,
+        Functions.Real    : _reduce_function_real,
+        Functions.Complex : _reduce_function_complex,
+    }
 
     def _reduce_modifier_index(self, ctx: Context, mod: Index):
         mod.expr = self._wrap_value(self._reduce_expr(ctx, mod.expr))
@@ -1294,14 +1517,64 @@ class Inferrer:
     def _reduce_modifier_assertion(self, ctx: Context, mod: Assertion):
         self._infer_type(ctx, mod.type)
 
-    def _reduce_conversion(self, ctx: Context, conversion: Conversion) -> Operand:
-        vtype = self._infer_type(ctx, conversion.type)
-        value = self._reduce_expr(ctx, conversion.value)
+    def _reduce_constant(self, const: Constant) -> Operand:
+        const.vt = self._type_of(const)
+        return const
+
+    def _reduce_composite(self, ctx: Context, comp: Composite) -> Operand:
+        vt = self._infer_type(ctx, comp.type)
+        rt = self._type_deref(vt)
+
+        # special case of arrays
+        if rt.kind == Kind.Array:
+            at = cast(ArrayType, rt)
+            nb = len(comp.value.items)
+
+            # update with actual size if needed
+            if at.len is None:
+                at.len = nb
+
+            # check for array size
+            if at.len < nb:
+                raise self._error(comp, 'array index %d out of bounds' % at.len)
+
+        # reduce the values
+        comp.vt = vt
+        self._reduce_composite_value(ctx, comp.value)
+        return comp
+
+    def _reduce_composite_value(self, ctx: Context, value: LiteralValue):
+        for val in value.items:
+            val.key = self._reduce_composite_value_key(ctx, val.key)
+            val.value = self._reduce_composite_value_key(ctx, val.value)
+
+    ElementItem = Union[
+        Expression,
+        LiteralValue,
+    ]
+
+    def _reduce_composite_value_key(self, ctx: Context, item: Optional[ElementItem]) -> Optional[ElementItem]:
+        return item and self._reduce_composite_value_item(ctx, item)
+
+    def _reduce_composite_value_item(self, ctx: Context, item: ElementItem) -> ElementItem:
+        if isinstance(item, Expression):
+            return self._wrap_value(self._reduce_expr(ctx, item))
+        else:
+            self._reduce_composite_value(ctx, item)
+            return item
+
+    def _reduce_conversion(self, ctx: Context, conv: Conversion) -> Operand:
+        vtype = self._infer_type(ctx, conv.type)
+        value = self._reduce_expr(ctx, conv.value)
         const = self._to_const(value)
 
         # reduce as needed
         if const is not None:
             return self._cast_to(vtype, const)
+
+        # must be convertible
+        if not self._is_convertible(vtype, value.vt):
+            raise self._error(conv, 'type %s is not convertible to %s' % (value.vt, vtype))
 
         # set the result type
         value.vt = vtype
@@ -1364,7 +1637,35 @@ class Inferrer:
 
     ### Type Traits ###
 
-    def _is_assignable(self, t: Type, v: Type) -> bool:
+    def _is_char_sl(self, t: Type) -> bool:
+        return t.kind == Kind.Slice and \
+               cast(SliceType, self._type_deref(t)).elem.kind in CHAR_KINDS
+
+    def _is_same_nt(self, t1: Type, t2: Type) -> bool:
+        t1 = self._type_deref(t1)
+        t2 = self._type_deref(t2)
+
+        # check for type kind
+        if not (t1.kind == t2.kind == Kind.Struct):
+            return False
+
+        # cast to struct types
+        t1 = cast(StructType, t1)
+        t2 = cast(StructType, t2)
+
+        # must have a same amount of fields
+        if len(t1.fields) != len(t2.fields):
+            return False
+
+        # compare each field, ignoring field tags
+        for f1, f2 in zip(t1.fields, t2.fields):
+            if f1.name != f2.name or f1.type != f2.type or f1.embed != f2.embed:
+                return False
+
+        # all tests have passed, they are identical struct types
+        return True
+
+    def _is_assignable(self, t: Type, x: Type) -> bool:
         """
         Type assignability check,
         refs from https://golang.org/ref/spec#Assignability
@@ -1374,37 +1675,37 @@ class Inferrer:
         """
 
         # x's type is identical to T
-        if t == v:
+        if t == x:
             return True
 
         # x's type V and T have identical underlying types and at least one of
         # V or T is not a defined type
-        elif (self._type_deref(t) == self._type_deref(v)) and \
-             (not isinstance(t, NamedType) or not isinstance(v, NamedType)):
+        elif (self._type_deref(t) == self._type_deref(x)) and \
+             (not isinstance(t, NamedType) or not isinstance(x, NamedType)):
             return True
 
         # T is an interface type and x implements T
         elif (t.kind == Kind.Interface) and \
-             (self._is_implements(v, cast(InterfaceType, t))):
+             (self._is_implements(x, cast(InterfaceType, t))):
             return True
 
         # x is a bidirectional channel value, T is a channel type, x's type V
         # and T have identical element types, and at least one of V or T is not
         # a defined type
         elif (t.kind == Kind.Chan) and \
-             (v.kind == Kind.Chan) and \
-             (cast(ChanType, v).dir == ChannelOptions.BOTH) and \
-             (cast(ChanType, v).elem == cast(ChanType, t).elem) and \
-             (not isinstance(t, NamedType) or not isinstance(v, NamedType)):
+             (x.kind == Kind.Chan) and \
+             (cast(ChanType, x).dir == ChannelOptions.BOTH) and \
+             (cast(ChanType, x).elem == cast(ChanType, t).elem) and \
+             (not isinstance(t, NamedType) or not isinstance(x, NamedType)):
             return True
 
         # x is the predeclared identifier nil and T is a pointer, function,
         # slice, map, channel, or interface type
-        elif v.kind == Kind.Nil and t.kind in NULLABLE_KINDS:
+        elif x.kind == Kind.Nil and t.kind in NULLABLE_KINDS:
             return True
 
         # x is an untyped constant representable by a value of type T
-        elif v in COERCING_MAPS and t.kind in COERCING_MAPS[v]:
+        elif x in COERCING_MAPS and t.kind in COERCING_MAPS[x]:
             return True
 
         # otherwise, x is not assignable to T
@@ -1489,6 +1790,9 @@ class Inferrer:
 
     def _is_implements(self, vt: Type, intf: InterfaceType) -> bool:
         """
+        Type implementation check,
+        refs from https://golang.org/ref/spec#Interface_types
+
         A variable of interface type can store a value of any type with a
         method set that is any superset of the interface. Such a type is said
         to implement the interface.
@@ -1519,6 +1823,54 @@ class Inferrer:
 
         # `vt` implements `intf` iff `tfs` is a superset of `ifs`
         return i == len(ifs)
+
+    def _is_convertible(self, t: Type, x: Type) -> bool:
+        """
+        Type convertibility check,
+        refs from https://golang.org/ref/spec#Conversions
+
+        An explicit conversion is an expression of the form T(x) where T is a
+        type and x is an expression that can be converted to type T.
+
+        A non-constant value x can be converted to type T in any of these cases:
+        """
+
+        # x is assignable to T
+        if self._is_assignable(t, x):
+            return True
+
+        # x's type and T are both integer or floating point types
+        elif t.kind in REAL_KINDS and x.kind in REAL_KINDS:
+            return True
+
+        # x's type and T are both complex types
+        elif t.kind in COMPLEX_KINDS and x.kind in COMPLEX_KINDS:
+            return True
+
+        # x is a string and T is a slice of bytes or runes
+        elif x.kind == Kind.String and self._is_char_sl(t):
+            return True
+
+        # x is an integer or a slice of bytes or runes and T is a string type
+        elif (t.kind == Kind.String) and \
+             (x.kind in INT_KINDS or self._is_char_sl(x)):
+            return True
+
+        # ignoring struct tags, x's type and T have identical underlying types
+        elif self._is_same_nt(t, x):
+            return True
+
+        # ignoring struct tags, x's type and T are pointer types that are not
+        # defined types, and their pointer base types have identical underlying
+        # types
+        elif (t.kind == Kind.Ptr) and not isinstance(t, NamedType) and \
+             (x.kind == Kind.Ptr) and not isinstance(x, NamedType) and \
+             (self._is_same_nt(cast(PtrType, t).elem, cast(PtrType, x).elem)):
+            return True
+
+        # otherwise, x is not convertible to T
+        else:
+            return False
 
     ### Specialized Type Inferrers ###
 

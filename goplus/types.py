@@ -205,9 +205,9 @@ class ArrayType(Type):
 
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
         if self.len is None:
-            return '[?]%r' % self.elem._to_repr(_path)
+            return '[?]%s' % self.elem._to_repr(_path)
         else:
-            return '[%d]%r' % (self.len, self.elem._to_repr(_path))
+            return '[%d]%s' % (self.len, self.elem._to_repr(_path))
 
 class SliceType(Type):
     elem: Optional[Type]
@@ -293,6 +293,12 @@ class NamedType(Type):
         return '%s(%s)' % (self.name, self.type._get_repr(_path))
 
 class UntypedType(Type):
+    def __eq__(self, other: 'Type') -> bool:
+        return super().__eq__(other) and isinstance(other, UntypedType)
+
+    def __hash__(self) -> int:
+        return super().__hash__()
+
     def _get_repr(self, _path: FrozenSet[Type]) -> str:
         return 'untyped %s' % super()._get_repr(_path)
 

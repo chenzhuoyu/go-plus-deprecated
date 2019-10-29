@@ -153,8 +153,9 @@ class TokenType(IntEnum):
     Comments  = 254
     Directive = 255
 
-    # virtual token type, used by type inferrer,
-    # thus the tokenizer never yields this token
+    # virtual token types, used by type inferrer,
+    # thus the tokenizer never yields these tokens
+    Nil       = 65534
     Bool      = 65535
 
 TokenValue = Optional[Union[

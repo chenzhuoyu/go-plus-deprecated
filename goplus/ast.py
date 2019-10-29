@@ -111,6 +111,11 @@ class Int(Value):
 
 # virtual AST node, used by type inferrer,
 # thus the parser never yields this AST node
+class Nil(Value):
+    kind = TokenType.Nil
+
+# virtual AST node, used by type inferrer,
+# thus the parser never yields this AST node
 class Bool(Value):
     kind = TokenType.Bool
 
@@ -363,12 +368,12 @@ class Element(Node):
         return ret
 
 class Composite(Node):
-    type  : Optional[LiteralType]
+    type  : LiteralType
     value : LiteralValue
 
     def clone(self) -> 'Composite':
         ret = Composite(Token(self.col, self.row, self.file, TokenType.End, None))
-        ret.type = self.type and self.type.clone()
+        ret.type = self.type.clone()
         ret.value = self.value.clone()
         return ret
 
