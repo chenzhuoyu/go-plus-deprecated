@@ -277,6 +277,12 @@ ORDERED_KINDS = {
     Kind.String,
 }
 
+SLICABLE_KINDS = {
+    Kind.Array,
+    Kind.Slice,
+    Kind.String,
+}
+
 NULLABLE_KINDS = {
     Kind.Map,
     Kind.Ptr,
@@ -928,31 +934,19 @@ class Inferrer:
             return self._make_bool(lhs, op(lhs.value, rhs.value))
 
     def _shifts_applier(self, lhs: Constant, rhs: Constant, op: BinaryOps) -> Constant:
-        lk = lhs.vt.kind
-        rk = rhs.vt.kind
-
-        # check the right operand
-        if rk not in REAL_KINDS:
-            raise self._error(lhs, 'shift count type %s, must be integer' % rhs.vt)
+        lval = self._to_int(lhs)
+        rval = self._to_int(rhs)
 
         # type of the LHS must be ints or untyped types
-        if lk not in INT_KINDS and (lk not in FLOAT_KINDS or not isinstance(lhs.vt, UntypedType)):
+        if lval is None:
             raise self._error(lhs, 'invalid shift of type %s' % lhs.vt)
 
-        # split the integer part and fractional part
-        lfrac, lval = math.modf(lhs.value)
-        rfrac, rval = math.modf(rhs.value)
-
-        # check for LHS fractional part
-        if lfrac != 0.0:
-            raise self._error(lhs, 'constant %s truncated to integer' % repr(lhs.value))
-
-        # check for RHS fractional part
-        if rfrac != 0.0:
-            raise self._error(rhs, 'constant %s truncated to integer' % repr(rhs.value))
+        # check the right operand
+        if rval is None:
+            raise self._error(lhs, 'shift count type %s, must be integer' % rhs.vt)
 
         # apply the shift
-        if lk in INT_KINDS:
+        if lhs.vt.kind in INT_KINDS:
             return self._range_checked(lhs.vt, lhs, op(int(lval), int(rval)))
         else:
             return self._range_checked(Types.UntypedInt, lhs, op(int(lval), int(rval)))
@@ -1056,6 +1050,40 @@ class Inferrer:
         Operand,
         Primary,
     ]
+
+    def _to_int(self, val: Constant) -> Optional[int]:
+        vt = val.vt
+        vk = val.vt.kind
+
+        # already integers
+        if vk in INT_KINDS:
+            return val.value
+
+        # untyped floating point numbers
+        elif vk in FLOAT_KINDS and isinstance(vt, UntypedType):
+            vv = val.value
+            fv, iv = math.modf(vv)
+
+            # check the fractional part
+            if fv != 0.0:
+                raise self._error(val, 'constant %s truncated to integer' % repr(vv))
+            else:
+                return int(iv)
+
+        # untyped complex numbers
+        elif vk in COMPLEX_KINDS and isinstance(vt, UntypedType):
+            vv = val.value
+            fv, iv = math.modf(vv.real)
+
+            # check the fractional and imaginary part
+            if fv != 0.0 or vv.imag != 0.0:
+                raise self._error(val, 'constant %s truncated to integer' % repr(vk.value))
+            else:
+                return int(iv)
+
+        # otherwise, it is not an integer
+        else:
+            return None
 
     def _to_const(self, val: Component) -> Optional[Constant]:
         if isinstance(val, Constant.__args__):
@@ -1298,24 +1326,30 @@ class Inferrer:
                     return result
 
         # initial value and type
-        vtype = val.vt
-        value = self._to_const(val)
+        vt = val.vt
+        vv = self._to_const(val)
 
         # get the actual value, if any
-        if value is not None:
-            value = value.value
+        if vv is not None:
+            vv = vv.value
 
-        # fold over the modifiers to calculate the primary type
-        while mods:
-            mod0, mods = mods[0], mods[1:]
-            vtype, value = self._reduce_primary_mod(mod0)(ctx, vtype, value, mod0)
+        # check for modifiers
+        if mods:
+            node = primary.blank()
+            node.val = val
+            node.mods = []
+
+            # fold over the modifiers to calculate the primary type
+            for mod in mods:
+                vt, vv = self._reduce_primary_mod(mod)(ctx, vt, vv, node, mod)
+                node.mods.append(mod)
 
         # still constant, convert to an operand
-        if value is not None:
-            return self._make_typed(primary, value, vtype)
+        if vv is not None:
+            return self._make_typed(primary, vv, vt)
 
         # set the final type
-        primary.vt = vtype
+        primary.vt = vt
         return primary
 
     ValueTerm = Optional[TokenValue]
@@ -1335,7 +1369,7 @@ class Inferrer:
         else:
             raise SystemError('invalid modifier reducer state')
 
-    def _reduce_primary_mod_index(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Index) -> ResultTerm:
+    def _reduce_primary_mod_index(self, ctx: Context, vt: Type, vv: ValueTerm, _: Node, mod: Index) -> ResultTerm:
         """
         Index expressions,
         refs from https://golang.org/ref/spec#Index_expressions
@@ -1417,16 +1451,114 @@ class Inferrer:
         else:
             return mt.elem, None
 
-    def _reduce_primary_mod_slice(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Slice) -> ResultTerm:
-        raise NotImplementedError   # TODO: reduce_slice()
+    def _reduce_primary_mod_slice(self, _: Context, vt: Type, vv: ValueTerm, node: Node, mod: Slice) -> ResultTerm:
+        """
+        Slice expressions,
+        refs from https://golang.org/ref/spec#Slice_expressions
 
-    def _reduce_primary_mod_selector(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Selector) -> ResultTerm:
+        Slice expressions construct a substring or slice from a string, array,
+        pointer to array, or slice. There are two variants: a simple form that
+        specifies a low and high bound, and a full form that also specifies a
+        bound on the capacity.
+        """
+
+        # get the underlying type
+        rt = self._type_deref(vt)
+        vk = rt.kind
+
+        # must be arrays, or slices, or strings
+        if vk not in SLICABLE_KINDS:
+            raise self._error(mod, 'invalid slicing of type %s' % vt)
+
+        # the slicing position must be integers if present
+        if mod.pos and mod.pos.vt.kind not in NUMERIC_KINDS:
+            raise self._error(mod.pos, 'lower slice index must be an integer')
+
+        # so does the slicing upper bound
+        if mod.len and mod.len.vt.kind not in NUMERIC_KINDS:
+            raise self._error(mod.len, 'upper slice index must be an integer')
+
+        # and the slicing capacity
+        if mod.cap and mod.cap.vt.kind not in NUMERIC_KINDS:
+            raise self._error(mod.cap, 'maximum slice index must be an integer')
+
+        # try reducing the slicing indices
+        pos = mod.pos and self._to_const(mod.pos)
+        end = mod.len and self._to_const(mod.len)
+        cap = mod.cap and self._to_const(mod.cap)
+
+        # try converting to integers
+        vcap = cap and self._to_int(cap)
+        vend = end and self._to_int(end)
+        vpos = pos and self._to_int(pos)
+
+        # the indices are in range if 0 <= low <= high <= max
+        if vpos and vpos < 0:
+            raise self._error(pos or mod, 'invalid slice index %s' % repr(vpos))
+        elif vend and vend < 0:
+            raise self._error(end or mod, 'invalid slice index %s' % repr(vend))
+        elif vcap and vcap < 0:
+            raise self._error(cap or mod, 'invalid slice index %s' % repr(vcap))
+        elif vcap and vpos and vcap < vpos:
+            raise self._error(pos or mod, 'slice index %s out of range' % repr(vpos))
+        elif vend and vpos and vend < vpos:
+            raise self._error(end or mod, 'slice index %s out of range' % repr(vend))
+        elif vcap and vend and vcap < vend:
+            raise self._error(cap or mod, 'slice index %s out of range' % repr(vcap))
+
+        # use default value if not present
+        if not mod.pos: vpos = 0
+        if not mod.len: vend = vv and len(vv)
+
+        # in the case of a slice slicing
+        if vk == Kind.Slice:
+            return vt, None
+
+        # in the case of an array slicing
+        elif vk == Kind.Array:
+            at = cast(ArrayType, rt)
+            nb = at.len
+
+            # addressibility and slicing indices check
+            if not self._is_addressable(node):
+                raise self._error(mod, 'slicing of an unaddressable value')
+            elif vpos and vpos > nb:
+                raise self._error(pos or mod, 'array slicing index %d out of range' % vpos)
+            elif vpos and vend > nb:
+                raise self._error(end or mod, 'array slicing index %d out of range' % vend)
+            elif vcap and vcap > nb:
+                raise self._error(cap or mod, 'array slicing index %d out of range' % vcap)
+            else:
+                return SliceType(at.elem), None
+
+        # in the case of a string slicing
+        elif vk == Kind.String:
+            if mod.cap:
+                raise self._error(mod.cap, '3-index slice of string')
+            elif vv is None:
+                return vt, None
+            elif not isinstance(vv, bytes):
+                raise SystemError('incorrect slice modifier state')
+            elif vpos is None or vend is None:
+                return vt, None
+            elif vpos > len(vv):
+                raise self._error(pos or mod, 'string slicing index %d out of range' % vpos)
+            elif vend > len(vv):
+                raise self._error(end or mod, 'string slicing index %d out of range' % vend)
+            else:
+                return vt, vv[vpos:vend]
+
+        # never happens
+        else:
+            raise SystemError('incorrect slice modifier kind')
+
+    def _reduce_primary_mod_selector(self, ctx: Context, vt: Type, vv: ValueTerm, node: Node, mod: Selector) -> ResultTerm:
         raise NotImplementedError   # TODO: reduce_selector()
 
-    def _reduce_primary_mod_arguments(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Arguments) -> ResultTerm:
+    def _reduce_primary_mod_arguments(self, ctx: Context, vt: Type, vv: ValueTerm, node: Node, mod: Arguments) -> ResultTerm:
         raise NotImplementedError   # TODO: reduce_arguments()
 
-    def _reduce_primary_mod_assertion(self, ctx: Context, vt: Type, vv: ValueTerm, mod: Assertion) -> ResultTerm:
+    def _reduce_primary_mod_assertion(self, ctx: Context, vt: Type, vv: ValueTerm, _: Node, mod: Assertion) -> ResultTerm:
         """
         Type assertions,
         refs from https://golang.org/ref/spec#Type_assertions
