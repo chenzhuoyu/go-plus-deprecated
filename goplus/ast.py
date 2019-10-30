@@ -288,6 +288,9 @@ class Primary(Node):
     val  : 'Operand'
     mods : List['Modifier']
 
+    def blank(self) -> 'Primary':
+        return cast(Primary, super().clone())
+
     def clone(self) -> 'Primary':
         ret = cast(Primary, super().clone())
         ret.val = self.val.clone()
@@ -424,7 +427,7 @@ class Index(Node):
 class Slice(Node):
     pos: Optional[Expression]
     len: Optional[Expression]
-    cap: Optional[Union[bool, Expression]]
+    cap: Optional[Expression]
 
     def clone(self) -> 'Slice':
         ret = cast(Slice, super().clone())

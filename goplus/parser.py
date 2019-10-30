@@ -1704,13 +1704,16 @@ class Parser:
 
         # optional capacity expression
         if self._should(self._peek(), TokenType.Operator, ':'):
-            self._next()
-            ret.cap = None
+            rl = ret.len
+            tk = self._next()
 
-            # it might be an empty expression
+            # full slice expressions, in such case only the first index may be omitted
+            if rl is None:
+                raise self._error(tk, 'expression expected')
+
+            # parse the capacity expression
             with self.Nested(self):
-                if not self._should(self._peek(), TokenType.Operator, ']'):
-                    ret.cap = self._parse_expression()
+                ret.cap = self._parse_expression()
 
         # must close with a ']'
         self._require(self._next(), TokenType.Operator, ']')
