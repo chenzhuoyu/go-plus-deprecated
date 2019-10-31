@@ -1463,11 +1463,20 @@ class Inferrer:
         """
 
         # get the underlying type
+        np = True
         rt = self._type_deref(vt)
-        vk = rt.kind
+
+        # if a is a pointer to an array, a[x:y] is shorthand for (*a)[x:y]
+        if rt.kind == Kind.Ptr:
+            np = False
+            rt = self._type_deref(cast(PtrType, rt).elem)
+
+            # must be a pointer to an array
+            if rt.kind != Kind.Array:
+                raise self._error(mod, 'invalid slicing of type %s' % vt)
 
         # must be arrays, or slices, or strings
-        if vk not in SLICABLE_KINDS:
+        if rt.kind not in SLICABLE_KINDS:
             raise self._error(mod, 'invalid slicing of type %s' % vt)
 
         # the slicing position must be integers if present
@@ -1500,27 +1509,27 @@ class Inferrer:
         elif vcap and vcap < 0:
             raise self._error(cap or mod, 'invalid slice index %s' % repr(vcap))
         elif vcap and vpos and vcap < vpos:
-            raise self._error(pos or mod, 'slice index %s out of range' % repr(vpos))
+            raise self._error(pos or mod, 'invalid slice index: %r > %r' % (vpos, vcap))
         elif vend and vpos and vend < vpos:
-            raise self._error(end or mod, 'slice index %s out of range' % repr(vend))
+            raise self._error(end or mod, 'invalid slice index: %r > %r' % (vpos, vend))
         elif vcap and vend and vcap < vend:
-            raise self._error(cap or mod, 'slice index %s out of range' % repr(vcap))
+            raise self._error(cap or mod, 'invalid slice index: %r > %r' % (vcap, vend))
 
         # use default value if not present
         if not mod.pos: vpos = 0
         if not mod.len: vend = vv and len(vv)
 
         # in the case of a slice slicing
-        if vk == Kind.Slice:
+        if rt.kind == Kind.Slice:
             return vt, None
 
         # in the case of an array slicing
-        elif vk == Kind.Array:
+        elif rt.kind == Kind.Array:
             at = cast(ArrayType, rt)
             nb = at.len
 
             # addressibility and slicing indices check
-            if not self._is_addressable(node):
+            if np and not self._is_addressable(node):
                 raise self._error(mod, 'slicing of an unaddressable value')
             elif vpos and vpos > nb:
                 raise self._error(pos or mod, 'array slicing index %d out of range' % vpos)
@@ -1532,7 +1541,7 @@ class Inferrer:
                 return SliceType(at.elem), None
 
         # in the case of a string slicing
-        elif vk == Kind.String:
+        elif rt.kind == Kind.String:
             if mod.cap:
                 raise self._error(mod.cap, '3-index slice of string')
             elif vv is None:
@@ -2165,6 +2174,10 @@ class Inferrer:
         if isinstance(x, Name):
             return True
 
+        # a composite literal
+        elif isinstance(x, Composite):
+            return True
+
         # not an expression
         elif isinstance(x, Expression) and x.right is not None:
             return False
@@ -2177,7 +2190,7 @@ class Inferrer:
         elif isinstance(x, Expression) and x.op.value == '*':
             return True
 
-        # a composite literal
+        # a composite literal wrapped inside a primary
         elif isinstance(x, Primary) and not x.mods and isinstance(x.val, Composite):
             return True
 
