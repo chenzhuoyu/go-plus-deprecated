@@ -1278,52 +1278,77 @@ class Inferrer:
 
         # modifiers
         mods = primary.mods
-        modc = len(mods)
+        mods = mods[:]
 
-        # cross-package constant referencing or same-package type conversion
-        if modc == 1 and isinstance(val, Name):
-            mod0 = mods[0]
+        # the root value is an identifer
+        if isinstance(val, Name):
+            name = val.value
             scope = ctx.scope
+            symbol = scope.resolve(name)
 
-            # constant referencing must be in the form of "x.y"
-            if isinstance(mod0, Selector):
-                name = mod0.attr
-                symbol = self._resolve(scope, val, name)
+            # might be a package name, in which case the first modifier must be a selector
+            if isinstance(symbol, PackageScope):
+                if not mods or not isinstance(mods[0], Selector):
+                    raise self._error(val, 'use of package %s without selector' % name)
+                else:
+                    attr = mods.pop(0).attr
+                    name = '%s.%s' % (name, attr.value)
+                    symbol = self._resolve(scope, val, attr)
 
-                # should be a constant value
-                if isinstance(symbol, ConstValue):
-                    return self._make_typed(val, symbol.value, symbol.type)
+            # check for symbol
+            if symbol is None:
+                raise self._error(val, 'unresolved symbol: %s' % name)
 
-            # type conversion must be in the form of "x(y)"
-            elif isinstance(mod0, Arguments):
-                name = val.value
-                symbol = scope.resolve(name)
-                result = self._reduce_primary_cast(mod0, symbol)
+            # a constant reference
+            elif isinstance(symbol, ConstValue):
+                vt = symbol.type
+                vv = symbol.value
+                val = self._make_typed(val, vv, vt)
 
-                # check for compile-time functions
-                if result is None:
-                    if isinstance(symbol, Symbols.Func):
-                        if symbol in self.__function_map__:
-                            result = self.__function_map__[symbol](self, mod0)
+            # a variable reference
+            elif isinstance(symbol, Symbols.Var):
+                if val.vt is None:
+                    raise SystemError('incorrect basic inferrer result')
 
-                # check for reduction result
-                if result is not None:
-                    return result
+            # a function reference
+            elif isinstance(symbol, Symbols.Func):
+                modc = len(mods)
+                func = self.__function_map__.get(symbol)
 
-        # cross-package type conversion
-        if modc == 2 and isinstance(val, Name):
-            mod0 = mods[0]
-            mod1 = mods[1]
+                # might be a built-in function, in such case the first modifier
+                # must be a function call
+                if func is not None:
+                    if not modc or not isinstance(mods[0], Arguments):
+                        raise self._error(val, 'use of builtin %s not in function call' % name)
+                    else:
+                        ret = func(self, mods[0])
+                        val = val if ret is None else ret
+                        mods = mods if ret is None else mods[1:]
 
-            # type conversion must be in the form of "x.y(z)"
-            if isinstance(mod0, Selector) and isinstance(mod1, Arguments):
-                scope = ctx.scope
-                symbol = self._resolve(scope, val, mod0.attr)
-                result = self._reduce_primary_cast(mod1, symbol)
+            # a type reference
+            elif isinstance(symbol, Symbols.Type):
+                modc = len(mods)
+                mod0 = modc and mods.pop(0)
 
-                # check for reduction result
-                if result is not None:
-                    return result
+                # must contains at least 1 modifier
+                if not modc:
+                    raise self._error(val, 'type %s is not an expression' % name)
+
+                # method selecting, in the form of `Type.Method` or `pkg.Type.Method`
+                elif isinstance(mod0, Selector):
+                    raise NotImplementedError   # TODO: implement this
+
+                # type casting, in the form of `Type(expr)` or `pkg.Type(expr)`
+                elif isinstance(mod0, Arguments):
+                    val = self._reduce_primary_cast(mod0, symbol)
+
+                # everything else is illegal
+                else:
+                    raise self._error(val, 'type %s is not an expression' % name)
+
+            # otherwise, it's illegal
+            else:
+                raise SystemError('incorrect symbol table state')
 
         # initial value and type
         vt = val.vt
@@ -1352,10 +1377,10 @@ class Inferrer:
         primary.vt = vt
         return primary
 
-    ValueTerm = Optional[TokenValue]
-    ResultTerm = Tuple[Type, ValueTerm]
+    SourceTerm = Optional[TokenValue]
+    ResultTerm = Tuple[Type, SourceTerm]
 
-    def _reduce_primary_mod(self, mod: Modifier) -> Callable[[Context, Type, ValueTerm, Modifier], ResultTerm]:
+    def _reduce_primary_mod(self, mod: Modifier) -> Callable[[Context, Type, SourceTerm, Modifier], ResultTerm]:
         if isinstance(mod, Index):
             return self._reduce_primary_mod_index
         elif isinstance(mod, Slice):
@@ -1369,7 +1394,7 @@ class Inferrer:
         else:
             raise SystemError('invalid modifier reducer state')
 
-    def _reduce_primary_mod_index(self, ctx: Context, vt: Type, vv: ValueTerm, _: Node, mod: Index) -> ResultTerm:
+    def _reduce_primary_mod_index(self, ctx: Context, vt: Type, vv: SourceTerm, _: Node, mod: Index) -> ResultTerm:
         """
         Index expressions,
         refs from https://golang.org/ref/spec#Index_expressions
@@ -1451,7 +1476,7 @@ class Inferrer:
         else:
             return mt.elem, None
 
-    def _reduce_primary_mod_slice(self, _: Context, vt: Type, vv: ValueTerm, node: Node, mod: Slice) -> ResultTerm:
+    def _reduce_primary_mod_slice(self, _: Context, vt: Type, vv: SourceTerm, node: Node, mod: Slice) -> ResultTerm:
         """
         Slice expressions,
         refs from https://golang.org/ref/spec#Slice_expressions
@@ -1561,13 +1586,13 @@ class Inferrer:
         else:
             raise SystemError('incorrect slice modifier kind')
 
-    def _reduce_primary_mod_selector(self, ctx: Context, vt: Type, vv: ValueTerm, node: Node, mod: Selector) -> ResultTerm:
+    def _reduce_primary_mod_selector(self, ctx: Context, vt: Type, vv: SourceTerm, node: Node, mod: Selector) -> ResultTerm:
         raise NotImplementedError   # TODO: reduce_selector()
 
-    def _reduce_primary_mod_arguments(self, ctx: Context, vt: Type, vv: ValueTerm, node: Node, mod: Arguments) -> ResultTerm:
+    def _reduce_primary_mod_arguments(self, ctx: Context, vt: Type, vv: SourceTerm, node: Node, mod: Arguments) -> ResultTerm:
         raise NotImplementedError   # TODO: reduce_arguments()
 
-    def _reduce_primary_mod_assertion(self, ctx: Context, vt: Type, vv: ValueTerm, _: Node, mod: Assertion) -> ResultTerm:
+    def _reduce_primary_mod_assertion(self, ctx: Context, vt: Type, vv: SourceTerm, _: Node, mod: Assertion) -> ResultTerm:
         """
         Type assertions,
         refs from https://golang.org/ref/spec#Type_assertions
@@ -1597,13 +1622,9 @@ class Inferrer:
         mod.vt = at
         return at, vv
 
-    def _reduce_primary_cast(self, mod: Arguments, symbol: Symbol) -> Optional[Operand]:
+    def _reduce_primary_cast(self, mod: Arguments, symbol: Symbols.Type) -> Optional[Operand]:
         args = mod.args
         argc = len(args)
-
-        # should be a type
-        if not isinstance(symbol, Symbols.Type):
-            return None
 
         # must have exact 1 argument, and it must be an expression
         if argc != 1 or not isinstance(args[0], Expression):
