@@ -1564,18 +1564,28 @@ class Parser:
             return self._parse_lambda()
 
         # a type specifier followed by a '{', it's a composite literal
-        # special case: name followed by a block should be parsed as a single
-        # name rather than a struct initialization when in control statements
+        #
+        # special case: in control statements, an identifier followed by a '{'
+        # should be parsed as a single name rather than a struct initialization
+        # to remove conflictions with the block start
         elif self._is_literal_type() and (self.expr >= 0 or not self._is_named_type()):
             return self._parse_composite()
 
         # a type specifier followed by a '(', it's a type conversion
+        #
+        # notice: this branch will hit if and only if it is very obvious to
+        # identify a type, such as something like `[]byte("hell, world")`
+        #
+        # since we cannot distinguish type names from variables or constants,
+        # some type conversions such like `pkg.Type(value)` will be parsed as
+        # function calling rather than type conversions, the type inferrer will
+        # take care of this situation
         elif self._is_conversion_type():
             return self._parse_conversion()
 
-        # standard identifiers (which might be a package name, but
-        # we cannot distinguish package names from normal identifiers
-        # in the parsing phase, it will be handled by the type inferrer)
+        # standard identifiers (which might be a package name, but we cannot
+        # distinguish package names from normal names in the parsing phase, it
+        # will be handled by the type inferrer)
         elif self._should(tk, TokenType.Name):
             return self._parse_name()
 
@@ -1743,14 +1753,15 @@ class Parser:
             self._next()
             return ret
 
-        # special case of the first argument, but there is a corner case:
+        # special case of the first argument:
+        #
         # in expression `foo(name, 1, 2)`, it is not possible to determain
         # whether `name` is a type name or a variable or a constant during the
         # parsing stage
         #
         # this can only happen for a few functions in real life, like `make`
         # and `new`, but since we can assign completely irrelevant values to
-        # them, it is not possible to tell whether they are the original one
+        # them, it is not possible to tell whether they are the original ones
         # or not
         #
         # so we just simply parse them as `type specifier`, the type inferrer
@@ -1795,7 +1806,7 @@ class Parser:
 
         # 'go:noescape' must not have a function body
         if (func.opts & FunctionOptions.NO_ESCAPE) and \
-           self._should(self._peek(), TokenType.Operator, '{'):
+           (self._should(self._peek(), TokenType.Operator, '{')):
             raise self._error(self._peek(), 'can only use //go:noescape with external func implementations')
 
         # otherwise, the body is optional
