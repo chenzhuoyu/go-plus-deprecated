@@ -351,6 +351,14 @@ COERCING_MAPS = {
     },
 }
 
+REALIZING_MAPS = {
+    Types.UntypedInt     : Types.Int,
+    Types.UntypedBool    : Types.Bool,
+    Types.UntypedFloat   : Types.Float64,
+    Types.UntypedString  : Types.String,
+    Types.UntypedComplex : Types.Complex128,
+}
+
 def _is_f32(v: float) -> bool:
     return -3.402823466e+38 <= v <= 3.402823466e+38
 
@@ -995,19 +1003,32 @@ class Inferrer:
     ### Type Folders ###
 
     def _fold_unary_addr(self, node: Node, vt: Type) -> Type:
-        if self._is_addressable(node):
-            return PtrType(vt)
-        else:
+        if not self._is_addressable(node):
             raise self._error(node, 'value is not addressable')
+        else:
+            return PtrType(vt)
 
     def _fold_unary_plus(self, node: Node, vt: Type) -> Type:
-        raise NotImplementedError   # TODO: fold unary +
+        if vt.kind not in NUMERIC_KINDS:
+            raise self._error(node, 'invalid operation: + %s' % vt)
+        else:
+            return vt
 
     def _fold_unary_recv(self, node: Node, vt: Type) -> Type:
-        raise NotImplementedError   # TODO: fold unary <-
+        vt = self._type_deref(vt)
+        vk = vt.kind
+
+        # must be channels
+        if vk != Kind.Chan:
+            raise self._error(node, 'invalid operation: receive from non-chan type %s' % vt)
+        else:
+            return cast(ChanType, vt).elem
 
     def _fold_unary_minus(self, node: Node, vt: Type) -> Type:
-        raise NotImplementedError   # TODO: fold unary -
+        if vt.kind not in NUMERIC_KINDS:
+            raise self._error(node, 'invalid operation: - %s' % vt)
+        else:
+            return vt
 
     def _fold_unary_deref(self, node: Node, vt: Type) -> Type:
         vt = self._type_deref(vt)
@@ -1015,15 +1036,21 @@ class Inferrer:
 
         # must be pointers
         if vk != Kind.Ptr:
-            raise self._error(node, 'value is not a pointer')
+            raise self._error(node, 'invalid indirect of type %s' % vt)
         else:
             return cast(PtrType, vt).elem
 
     def _fold_unary_bit_not(self, node: Node, vt: Type) -> Type:
-        raise NotImplementedError   # TODO: fold unary ^
+        if vt.kind not in INT_KINDS:
+            raise self._error(node, 'invalid operation: ^ %s' % vt)
+        else:
+            return vt
 
     def _fold_unary_bool_not(self, node: Node, vt: Type) -> Type:
-        raise NotImplementedError   # TODO: fold unary !
+        if vt.kind != Kind.Bool:
+            raise self._error(node, 'invalid operation: ! %s' % vt)
+        else:
+            return vt
 
     __unary_folders__ = {
         '+'  : _fold_unary_plus,
@@ -1115,19 +1142,27 @@ class Inferrer:
         return ret
 
     def _wrap_value(self, val: Operand) -> Expression:
+        if val.vt is None:
+            raise SystemError('invalid value type')
+        else:
+            return self._wrap_typed(val, val.vt)
+
+    def _wrap_typed(self, val: Operand, vt: Type) -> Expression:
         if isinstance(val, Expression):
+            val.vt = vt
             return val
         else:
             prim = Primary(Token(val.col, val.row, val.file, TokenType.End, None))
-            prim.vt = val.vt
+            prim.vt = vt
             prim.val = val
             return self._wrap_prim(prim)
 
-    def _wrap_selector(self, base: Name, attr: Name) -> Expression:
+    def _wrap_selector(self, base: Name, attr: Name, vt: Type) -> Expression:
         prim = Primary(Token(base.col, base.row, base.file, TokenType.End, None))
         prop = Selector(Token(attr.col, attr.row, attr.file, TokenType.Name, attr.value))
 
-        # set primary base and selector
+        # set primary type base and selector
+        prim.vt = vt
         prim.val = base
         prop.attr = attr
 
@@ -1152,7 +1187,7 @@ class Inferrer:
             file = ctx.fmap[key]
             rctx = self.Context(ctx.pkg, ctx.fmap, file)
 
-            # find the type specifier
+            # try constant names
             for spec in file.consts:
                 if any(item.value == name.value for item in spec.names):
                     sym = self._find_val(self._infer_const_spec(rctx, spec), name)
@@ -1165,6 +1200,13 @@ class Inferrer:
                         sym = self._find_val(self._infer_var_spec(rctx, spec), name)
                         break
 
+            # still not resolved, try function names
+            if sym is None:
+                for spec in file.funcs:
+                    if spec.name.value == name.value:
+                        sym = self._infer_func_spec(rctx, spec)
+                        break
+
         # still not resolved, try iota if possible
         if sym is None:
             if key == 'iota' and self.iota is not None:
@@ -1172,7 +1214,7 @@ class Inferrer:
             else:
                 raise self._error(name, 'unresolved identifier: %s' % key)
 
-        # reduce as needed
+        # reduce if possible
         if isinstance(sym, ConstValue):
             return self._make_typed(name, sym.value, sym.type)
 
@@ -1846,9 +1888,9 @@ class Inferrer:
         # variables and functions, make a name reference
         elif isinstance(symbol, (Symbols.Var, Symbols.Func)):
             if package is None:
-                return self._wrap_value(name)
+                return self._wrap_typed(name, symbol.type)
             else:
-                return self._wrap_selector(package, name)
+                return self._wrap_selector(package, name, symbol.type)
 
         # other kind of stuff
         else:
@@ -2416,7 +2458,48 @@ class Inferrer:
     ### Specification Inferrers ###
 
     def _infer_var_spec(self, ctx: Context, spec: InitSpec) -> List[Symbol]:
-        raise NotImplementedError   # TODO: infer var
+        ret = []
+        vtype = None
+
+        # parse value type, if any
+        if spec.type is not None:
+            vtype = self._infer_type(ctx, spec.type)
+
+        # check for value count
+        if len(spec.names) != len(spec.values):
+            raise self._error(spec, 'expression count mismatch')
+
+        # evaluate all expressions, and resolve each symbol
+        for name, expr in zip(spec.names, spec.values):
+            rval = self._reduce_expr(ctx, expr)
+            cval = self._to_const(rval)
+
+            # optional type assertion
+            if vtype is not None:
+                if self._type_coerce(vtype, rval.vt) == vtype:
+                    rval.vt = vtype
+                else:
+                    raise self._error(expr, 'cannot use type %s as type %s in assignment' % (rval.vt, vtype))
+
+            # variables must be of typed types
+            if isinstance(rval.vt, UntypedType):
+                rval.vt = REALIZING_MAPS[rval.vt]
+
+            # range check if the expression is a constant
+            if cval is not None:
+                self._range_checked(cval.vt, cval, cval.value)
+
+            # create a new symbol
+            sym = Symbols.Var(name.value, rval.vt)
+            spec.vt = rval.vt
+
+            # declare the symbol
+            print('var %s %s = %s' % (name.value, rval.vt, rval))  # FIXME: remove this
+            ret.append(sym)
+            self._declare(ctx.pkg, name.value, name, sym)
+
+        # all done
+        return ret
 
     def _infer_type_spec(self, ctx: Context, spec: TypeSpec) -> Symbol:
         name = spec.name
@@ -2472,7 +2555,7 @@ class Inferrer:
                     if self._type_coerce(vtype, val.vt) == vtype:
                         val.vt = vtype
                     else:
-                        raise self._error(value, 'invalid constant type %s' % val.vt)
+                        raise self._error(value, 'cannot convert %r (type %s) to type %s' % (val.value, val.vt, vtype))
 
                 # check the range
                 vv = val.value
@@ -2483,7 +2566,7 @@ class Inferrer:
                 spec.vt = val.vt
 
                 # declare the symbol
-                print('%s %s = %s' % (key, val.vt, val.value))  # FIXME: remove this
+                print('const %s %s = %s' % (key, val.vt, val.value))  # FIXME: remove this
                 ret.append(sym)
                 self._declare(ctx.pkg, key, name, sym)
 
